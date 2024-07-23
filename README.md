@@ -17,20 +17,27 @@ can be configured to use Wifi STA mode.
 
 The server accepts the following commands:
 
-   file operations
-         upload   - upload a file to SD card
-         download - download a file
-         remove   - remove a file
-         rename   - rename a file
-         sha1     - get sha1 sum of a file
-         list     - get dir/file info
-   config   - change wifi settings
-         param=value
-   info     - get general info about the server
-   exp      - experimental commands
-         power=off|reset
-         sleep=sense|ms (sense puts ESP32 to sleep until there is an activity on D3/CS SD finger, ms -- sleep for N ms)
+
+#### file operations
+
+     upload   - upload a file to SD card
+     download - download a file
+     remove   - remove a file
+     rename   - rename a file
+     sha1     - get sha1 sum of a file
+     list     - get dir/file info
  
+ #### config   - change wifi settings
+ 
+    param=value
+ 
+ #### info     - get general info about the server
+ 
+ #### exp      - experimental commands
+ 
+    power=off|reset
+    sleep=sense|ms (sense puts ESP32 to sleep until there is an activity on D3/CS SD finger, ms -- sleep for N ms)
+
  ## examples
    
    Change AP name and AP password
