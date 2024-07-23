@@ -32,41 +32,53 @@ The server accepts the following commands:
          sleep=sense|ms (sense puts ESP32 to sleep until there is an activity on D3/CS SD finger, ms -- sleep for N ms)
  
  ## examples
- 
+   
    Change AP name and AP password
-       curl http://192.168.4.1/config?ap_ssid=sdwifi4&ap_password=012345678
+   
+    curl http://192.168.4.1/config?ap_ssid=sdwifi4&ap_password=012345678
  
    Change wifi mode to STA
-       curl http://192.168.4.1/config?sta_ssid=mywifinetwork&sta_password=mywifinetworkpassword
+    
+    curl http://192.168.4.1/config?sta_ssid=mywifinetwork&sta_password=mywifinetworkpassword
  
    Reset wifi settings to default (AP mode, no password)
-       curl http://sdwifi.local/config?reset=all
+    
+    curl http://sdwifi.local/config?reset=all
 
-     or selectively 
-       curl http://sdwifi.local/config?reset=sta_ssid
+   or reset a parameter selectively 
+   
+    curl http://sdwifi.local/config?reset=sta_ssid
 
    Upload file xe2-ffboot.bin as ffboot.bin to the root of SD card
-         curl -T xe2-ffboot.bin http://192.168.4.1/upload/ffboot.bin
+    
+     curl -T xe2-ffboot.bin http://192.168.4.1/upload/ffboot.bin
  
-     or when in STA mode
-          curl -T xe2-ffboot.bin http://sdwifi.local/upload/ffboot.bin
+   or when in STA mode
+   
+    curl -T xe2-ffboot.bin http://sdwifi.local/upload/ffboot.bin
    
    Remove a file
-       curl http://sdwifi.local/remove/ffboot.bin
+    
+    curl http://sdwifi.local/remove/ffboot.bin
  
    Get sha1 sum of a file
-       curl http://sdwifi.local/sha1/ffboot.bin
+    
+    curl http://sdwifi.local/sha1/ffboot.bin
  
    Rename a file
-       curl http://sdwifi.local/rename?from=ffboot_new.bin&to=ffboot.bin
+    
+    curl http://sdwifi.local/rename?from=ffboot_new.bin&to=ffboot.bin
  
    Give permanent control over SD to ESP32, blocks access to NAND SD card from the host side
-       curl http://sdwifi.local/exp?io26=esp32
+     
+    curl http://sdwifi.local/exp?io26=esp32
  
    Relinquish SD control
-       curl http://sdwifi.local/exp?io26=host
+    
+    curl http://sdwifi.local/exp?io26=host
  
    Reboot ESP32
-       curl http://sdwifi.local/exp?power=reset
+    
+    curl http://sdwifi.local/exp?power=reset
  
  
