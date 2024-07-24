@@ -16,18 +16,18 @@ The code is based on standard Arduino/ESP32 sketches and the orginal FYSETC [fir
 
 - compile and upload with arduino-cli (assuming the port is /dev/ttyUSB)
 
-    cd sdwifi/
-    arduino-cli compile --profile sdwifi
-    arduino-cli upload  --profile sdwifi --port /dev/ttyUSB0
+      cd sdwifi/
+      arduino-cli compile --profile sdwifi
+      arduino-cli upload  --profile sdwifi --port /dev/ttyUSB0
 
 - run monitor
 
-    arduino-cli monitor --port /dev/ttyUSB0
+      arduino-cli monitor --port /dev/ttyUSB0
 
 - if successful you should see "HTTP server started" message:
 
-    [   118][I][sdwifi.ino:167] setupAP(): Soft AP created: sdwifi
-    [   131][I][sdwifi.ino:140] setup(): HTTP server started
+      [   118][I][sdwifi.ino:167] setupAP(): Soft AP created: sdwifi
+      [   131][I][sdwifi.ino:140] setup(): HTTP server started
 
 ## usage
 
