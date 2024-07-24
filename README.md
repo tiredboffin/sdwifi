@@ -4,21 +4,39 @@ simple http server to upload files to [FYSETC SD WiFi Pro card](https://github.c
 
 ## description
  
-The primary use case is my research project on Fujifilm camera custom boot code. Fro the project I was looking for a convenient wireless way to transfer experimental files to and from SD card that is inserted into the camera slot when the camera's native WiFi cannot be used for that purpose. Otherwise to update/collect the files I had to physically transfser the SD card itself.
+The primary use case is my research project on Fujifilm camera custom boot code. For the project I was looking for a convenient way to wirelessly transfer experimental fimrware files to and from SD card that is inserted into the camera slot when the camera's native WiFi cannot be used for that purpose. Otherwise to update/collect the files I had to physically transfser the SD card itself.
 
 While the use case is very specific to my needs the server may still prove to be useful in other similar simple scenarios when it could be reasonably guaranteed by some means that the SD card is not used actively by the host (camera, printer etc) at the time this server is accessing the card. Or if the host is capable to recover gracefully from sporadic SD card access errors.
 
 The code is based on standard Arduino/ESP32 sketches and the orginal FYSETC [firmware](https://github.com/FYSETC/SdWiFiBrowser). 
 
+## build instructions
+
+- clone the repository 
+
+- compile and upload with arduino-cli (assuming the port is /dev/ttyUSB)
+
+    cd sdwifi/
+    arduino-cli compile --profile sdwifi
+    arduino-cli upload  --profile sdwifi --port /dev/ttyUSB0
+
+  run monitor
+
+    arduino-cli monitor --port /dev/ttyUSB0
+
+  if successful you should see "HTTP server started" message:
+
+    [   118][I][sdwifi.ino:167] setupAP(): Soft AP created: sdwifi
+    [   131][I][sdwifi.ino:140] setup(): HTTP server started
+
 ## usage
 
 By default the server starts as unprotected Wifi Access Point with defaul name "sdwifi" and ip address 192.168.4.1 and then it 
-can be configured to use Wifi STA mode.
+to be used or can be configured to use Wifi STA mode.
 
 The server accepts the following commands:
 
-
-#### file operations
+ #### file operations
 
      upload   - upload a file to SD card
      download - download a file
@@ -87,5 +105,4 @@ The server accepts the following commands:
    Reboot ESP32
     
     curl http://sdwifi.local/exp?power=reset
- 
- 
+

@@ -1,0 +1,12 @@
+profiles:
+  sdwifi:
+    notes: FYSETC SD WiFi Pro 8G card based on ESP32-PICO-D4
+    fqbn: esp32:esp32:pico32:PartitionScheme=no_ota,DebugLevel=info
+    platforms:
+      - platform: esp32:esp32 (3.0.2)
+
+  sdwifi_:
+    notes: FYSETC SD WiFi Pro 8G card based on ESP32-PICO-D4
+    fqbn: esp32:esp32:pico32:PartitionScheme=no_ota,DebugLevel=info,EraseFlash=all
+    platforms:
+      - platform: esp32:esp32 (3.0.2)
