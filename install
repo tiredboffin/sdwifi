@@ -1,0 +1,15 @@
+#!/bin/sh
+esptool=esptool
+
+port="--baud 921600 --port /dev/ttyUSB0"
+build_dir="./build/esp32.esp32.pico32"
+sketch_name="sdwifi.ino"
+
+bootloader="0x1000 $build_dir/$sketch_name.bootloader.bin"
+partitions="0x8000 $build_dir/$sketch_name.partitions.bin"
+bootapp="0xe000 $build_dir/boot_app0.bin"
+sketch_bin="0x10000 ./build/esp32.esp32.pico32/$sketch_name.bin"
+
+args="--before default_reset --after hard_reset write_flash -z --flash_mode keep --flash_freq keep --flash_size keep"
+
+$esptool --chip esp32 $port $args $bootloader  $partitions $bootapp $sketch_bin
