@@ -77,9 +77,15 @@
 #include <SD_MMC.h>
 #include <Preferences.h>
 #include <mbedtls/sha1.h>
+#include <esp_mac.h>
+#if defined __has_include
+#  if __has_include (<mbedtls/compat-2.x.h>)
+#     include <mbedtls/compat-2.x.h>
+#  endif
+#endif
 
 
-static char *default_name = "sdwifi";
+static const char *default_name = "sdwifi";
 
 #define SD_SWITCH_PIN GPIO_NUM_26
 #define CS_SENSE_PIN  GPIO_NUM_33
