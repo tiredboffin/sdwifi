@@ -31,8 +31,8 @@ The code is based on standard Arduino/ESP32 sketches and the orginal FYSETC [fir
 
 ## usage
 
-By default the server starts as unprotected Wifi Access Point with defaul name "sdwifi" and ip address 192.168.4.1 and then it 
-to be used or can be configured to use Wifi STA mode.
+By default the server starts as unprotected Wifi Access Point with defaul name "sdwifi" and ip address 192.168.4.1. It 
+to be used in AP mode or it can be configured to use Wifi STA mode.
 
 The server accepts the following commands:
 
