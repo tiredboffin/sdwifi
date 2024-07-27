@@ -75,23 +75,27 @@ The server accepts the following commands:
 
    Upload file xe2-ffboot.bin as ffboot.bin to the root of SD card
     
-     curl -T xe2-ffboot.bin http://192.168.4.1/upload/ffboot.bin
+    curl -F "data=@xe2-ffboot.bin" http://192.168.4.1/upload?path=ffboot.bin
  
    or when in STA mode
    
-    curl -T xe2-ffboot.bin http://sdwifi.local/upload/ffboot.bin
+    curl -F "data=@xe2-ffboot.bin" http://sdwifi.local/upload?path=ffboot.bin
    
+   Download a file
+    
+    curl --output xe2-ffboot.bin http://sdwifi.local/download?path=ffboot.bin
+ 
    Remove a file
     
-    curl http://sdwifi.local/remove/ffboot.bin
+    curl http://sdwifi.local/remove?path=ffboot.bin
  
    Get sha1 sum of a file
     
-    curl http://sdwifi.local/sha1/ffboot.bin
+    curl http://sdwifi.local/sha1?path=ffboot.bin
  
    Rename a file
     
-    curl http://sdwifi.local/rename?from=ffboot_new.bin&to=ffboot.bin
+    curl http://sdwifi.local/rename?from=ffboot_custom.bin&to=ffboot.bin
  
    Give permanent control over SD to ESP32, blocks access to NAND SD card from the host side
      
