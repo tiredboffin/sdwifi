@@ -1,0 +1,13 @@
+#!/bin/sh
+TMPDIR=./tmp
+FQBN=esp32:esp32:pico32:PartitionScheme=no_ota,DebugLevel=info
+
+PROPS=$(TMPDIR=$TMPDIR arduino-cli compile --fqbn $FQBN --show-properties --json)
+COMPILER_PATH=`echo $PROPS | jq -rc ".builder_result.build_properties|map(select(contains(\"compiler.path\")))[0]|split(\"=\")[1]"`
+COMPILER_PREFIX=`echo $PROPS | jq -rc ".builder_result.build_properties|map(select(contains(\"compiler.prefix\")))[0]|split(\"=\")[1]"`
+ADDR2LINE=${COMPILER_PATH}${COMPILER_PREFIX}addr2line
+
+ELF_PATH=`echo $PROPS | jq -rc ".builder_result.build_properties|map(select(contains(\"debug.executable\")))[0]|split(\"=\")[1]"`
+
+ELF=./build/esp32.esp32.pico32
+java -jar tools/EspStackTraceDecoder.jar ${ADDR2LINE} ${ELF_PATH} dump.txt
