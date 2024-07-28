@@ -49,7 +49,9 @@ The server accepts the following commands:
     param=value
  
  #### info     - get general info about the server
- 
+
+ #### ping     - returns 0200 empty response
+
  #### exp      - experimental commands
  
     power=off|reset
@@ -80,14 +82,18 @@ The server accepts the following commands:
    or when in STA mode
    
     curl -T xe2-ffboot.bin http://sdwifi.local/upload/ffboot.bin
+
+   or with POST
+   
+    curl -F "data=@xe2-ffboot.bin" "http://sdwifi.local/upload?path=ffboot.bin
    
    Remove a file
     
-    curl http://sdwifi.local/remove/ffboot.bin
+    curl http://sdwifi.local/remove?path=ffboot.bin
  
    Get sha1 sum of a file
     
-    curl http://sdwifi.local/sha1/ffboot.bin
+    curl http://sdwifi.local/sha1?path=ffboot.bin
  
    Rename a file
     
@@ -104,4 +110,8 @@ The server accepts the following commands:
    Reboot ESP32
     
     curl http://sdwifi.local/exp?power=reset
+
+   Get some info
+    
+    curl http://sdwifi.local/info | jq
 
