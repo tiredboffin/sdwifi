@@ -117,7 +117,7 @@ The server accepts the following commands:
 
    Get some info
     
-    curl http://sdwifi.local/info | jq
+    curl http://sdwifi.local/sysinfo | jq
 
    Get a list of files in / directory
     
