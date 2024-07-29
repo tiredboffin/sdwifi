@@ -93,7 +93,7 @@ The server accepts the following commands:
  
    Get sha1 sum of a file
     
-    curl http://sdwifi.local/sha1?path=ffboot.bin
+    curl http://sdwifi.local/sha1?path=ffboot.bin | jq
  
    Rename a file
     
@@ -115,3 +115,6 @@ The server accepts the following commands:
     
     curl http://sdwifi.local/info | jq
 
+   Get a list of files in / directory
+    
+    curl http://sdwifi.local/list?path=/ | jq

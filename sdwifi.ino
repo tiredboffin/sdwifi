@@ -279,7 +279,7 @@ void handleInfo(void)
   txt += getInterfaceMacAddress(ESP_MAC_BT);
   txt += "\"}}}}";
 
-  server.send(200, "application/json", txt + "\r\n");
+  server.send(200, "application/json", txt);
 }
 
 /* CMD: Update configuration parameters */
@@ -423,14 +423,13 @@ void handleList()
 
   String parentDir;
   File root;
+  
   String path = server.arg("path");
 
   if (path[0] != '/')
     path = "/" + path;
 
-  String msg;
-  msg += "Path ";
-  msg += path;
+  String txt;
 
   parentDir = String(path);
   parentDir[strrchr(path.c_str(), '/') - path.c_str() + 1] = 0;
@@ -443,40 +442,52 @@ void handleList()
 
   if (fileSystem.exists((char *)path.c_str()))
   {
-    msg += "\n\n";
     root = fileSystem.open(path);
     if (root.isDirectory())
     {
+      txt = "{\"list\":[";
+      
+      bool isFirstItem = true;
       while (File file = root.openNextFile())
       {
+        if (!isFirstItem) {
+          txt += ",";
+        }
+        txt += "{\"type\":";
         if (file.isDirectory())
         {
-          msg += "<DIR> ";
-          msg += file.name();
-          msg += "\n";
+          txt += "\"dir\",";
         }
         else
         {
-          msg += file.size();
-          msg += " ";
-          msg += file.name();
-          msg += "\n";
+          txt += "\"file\",";
         }
+        txt += "\"name\":\"";
+        txt += file.name();
+        txt += "\",";
+        txt += "\"size\":";
+        txt += file.size();
+        txt += "}";
+        isFirstItem = false;
       }
+      txt += "]}";
     }
     else
     {
-      msg += root.size();
-      msg += " ";
-      msg += root.name();
-      msg += "\n";
+      txt = "{\"item\": {\"type\":\"file\",";
+      txt += "\"name\":\"";
+      txt += root.name();
+      txt += "\"size\":\"";
+      txt += root.size();
+      txt += "\"}}";
     }
     if (root)
       root.close();
-    httpOK(msg);
+    server.send(200, "application/json", txt);
   }
-  else
-    httpNotFound(msg + " not found");
+  else {
+    httpNotFound();
+  }
   umountSD();
 }
 
@@ -662,9 +673,9 @@ void handleSha1()
         mbedtls_sha1_update_ret(&ctx, sha1_buffer, r);
       }
 
-      String result;
+      String result = "{\"sha1sum\": \"";
       {
-        uint8_t tmp[20];
+        unsigned char tmp[20];
         mbedtls_sha1_finish_ret(&ctx, tmp);
         mbedtls_sha1_free(&ctx);
 
@@ -675,7 +686,8 @@ void handleSha1()
           result += String(tmp[i], 16);
         }
       }
-      httpOK(result);
+      result += "\"}";
+      server.send(200, "application/json", result);
     }
     else
     {
