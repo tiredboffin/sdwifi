@@ -91,7 +91,7 @@ void setupWebServer()
 {
   /* TODO: rethink the API to simplify scripting  */
   server.on("/ping", []() { httpOK(); });
-  server.on("/info", handleInfo);
+  server.on("/sysinfo", handleInfo);
   server.on("/config", handleConfig);
   server.on("/exp", handleExperimental);
   /* file ops */

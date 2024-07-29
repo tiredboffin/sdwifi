@@ -48,7 +48,7 @@ The server accepts the following commands:
  
     param=value
  
- #### info     - get general info about the server
+ #### sysinfo  - get general info about the server
 
  #### ping     - returns 0200 empty response
 
