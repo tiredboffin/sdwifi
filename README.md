@@ -75,6 +75,10 @@ The server accepts the following commands:
    
     curl http://sdwifi.local/config?reset=sta_ssid
 
+   Download a file uilog.bin 
+
+    curl http://sdwifi.local/download?path=uilog.bin -O -J
+
    Upload file xe2-ffboot.bin as ffboot.bin to the root of SD card
     
      curl -T xe2-ffboot.bin http://192.168.4.1/upload/ffboot.bin
@@ -83,7 +87,7 @@ The server accepts the following commands:
    
     curl -T xe2-ffboot.bin http://sdwifi.local/upload/ffboot.bin
 
-   or with POST
+   or with POST (from a Form)
    
     curl -F "data=@xe2-ffboot.bin" "http://sdwifi.local/upload?path=ffboot.bin
    

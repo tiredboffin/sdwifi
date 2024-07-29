@@ -15,6 +15,7 @@
 #include <Preferences.h>
 #include <mbedtls/sha1.h>
 #include <esp_mac.h>
+#include <SPIFFS.h>
 
 #if defined __has_include
 #if __has_include(<mbedtls/compat-2.x.h>)
@@ -54,8 +55,8 @@ void setup(void)
   Serial.setDebugOutput(true);
 
   setupWiFi();
+  SPIFFS.begin();
   setupWebServer();
-
   server.begin();
 }
 
@@ -89,10 +90,7 @@ void setupWiFi()
 void setupWebServer()
 {
   /* TODO: rethink the API to simplify scripting  */
-  server.onNotFound([]()
-                    { httpNotFound("unknown cmd: " + server.uri()); });
-  server.on("/ping", []()
-            { httpOK(); });
+  server.on("/ping", []() { httpOK(); });
   server.on("/info", handleInfo);
   server.on("/config", handleConfig);
   server.on("/exp", handleExperimental);
@@ -106,6 +104,9 @@ void setupWebServer()
   server.on("/remove", handleRemove);
   server.on("/list", handleList);
   server.on("/rename", handleRename);
+  server.serveStatic("/", SPIFFS, "/");
+  server.onNotFound([]() { httpNotFound(); });
+
   log_i("HTTP server started");
 }
 
@@ -166,7 +167,7 @@ static bool mountSD(void)
     return true;
   }
 
-  log_v("In SD Card mount");
+  log_i("SD Card mount");
 
   /* get control over flash NAND */
   if (!esp32_controls_sd)
@@ -445,15 +446,16 @@ void handleList()
     root = fileSystem.open(path);
     if (root.isDirectory())
     {
-      txt = "{\"list\":[";
-      
-      bool isFirstItem = true;
+      int count=0;
+      txt = "[";
       while (File file = root.openNextFile())
       {
-        if (!isFirstItem) {
+        if (count++) {
           txt += ",";
         }
-        txt += "{\"type\":";
+        txt += "{\"id\":";
+        txt += count;
+        txt += ",\"type\":";
         if (file.isDirectory())
         {
           txt += "\"dir\",";
@@ -468,9 +470,8 @@ void handleList()
         txt += "\"size\":";
         txt += file.size();
         txt += "}";
-        isFirstItem = false;
       }
-      txt += "]}";
+      txt += "]";
     }
     else
     {
@@ -525,6 +526,7 @@ void handleDownload(void)
     }
     else
     {
+      server.sendHeader("Content-Disposition", "attachment; filename=\"" + String(dataFile.name()) + "\"");
       unsigned long sentSize = server.streamFile(dataFile, "application/octet-stream");
       if (sentSize != dataFile.size())
         log_e("Sent less data %ul than expected %ul", sentSize, dataFile.size());
