@@ -90,7 +90,8 @@ void setupWiFi()
 void setupWebServer()
 {
   /* TODO: rethink the API to simplify scripting  */
-  server.on("/ping", []() { httpOK(); });
+  server.on("/ping", []()
+            { httpOK(); });
   server.on("/sysinfo", handleInfo);
   server.on("/config", handleConfig);
   server.on("/exp", handleExperimental);
@@ -104,8 +105,18 @@ void setupWebServer()
   server.on("/remove", handleRemove);
   server.on("/list", handleList);
   server.on("/rename", handleRename);
+
+  /* Tetsing: For compatibility with original Fysetc web app code */
+  server.on("/relinquish", HTTP_GET, []()
+            { httpOK(); });
+  server.on("/wificonnect", HTTP_POST, handleWiFiConnect);
+  server.on("/wifiap", HTTP_POST, handleWiFiAP);
+  server.on("/delete", handleRemove);
+
+  /* Static content */
   server.serveStatic("/", SPIFFS, "/");
-  server.onNotFound([]() { httpNotFound(); });
+  server.onNotFound([]()
+                    { httpNotFound(); });
 
   log_i("HTTP server started");
 }
@@ -327,6 +338,53 @@ void handleConfig(void)
   httpOK(txt);
 }
 
+/* CMD: wificonnect: compatibility with original Fysetc web app */
+void handleWiFiConnect(void)
+{
+
+  String txt;
+
+  prefs.begin(PREF_NS, PREF_RW_MODE);
+  for (int i = 0; i < server.args(); i++)
+  {
+    String n = "sta_" + server.argName(i);
+    String v = server.arg(i);
+    if (cfgparamVerify(n.c_str()))
+    {
+      prefs.putString(n.c_str(), v.c_str());
+      txt += n + "=" + v + "\n";
+    }
+    else if (n == "clear" || n == "reset")
+    {
+      if (v == "all")
+        prefs.clear();
+      else
+        prefs.remove(v.c_str());
+      txt += n + " " + v + "\n";
+    }
+    else
+    {
+      txt += "unknown parameter " + n + " ignored\n";
+    }
+  }
+  prefs.end();
+  httpOK();
+  delay(50);
+  ESP.restart();
+}
+
+/* CMD: wificonnect: compatibility with original Fysetc web app */
+void handleWiFiAP(void)
+{
+  prefs.begin(PREF_NS, PREF_RW_MODE);
+  prefs.remove("sta_ssid");
+  prefs.remove("sta_password");
+  prefs.end();
+  httpOK();
+  delay(50);
+  ESP.restart();
+}
+
 void handleExperimental(void)
 {
   String txt;
@@ -416,7 +474,17 @@ void handleExperimental(void)
 void handleList()
 {
 
-  if (!server.hasArg("path"))
+  String path;
+
+  if (server.hasArg("path"))
+  {
+    path = server.arg("path");
+  }
+  else if (server.hasArg("dir"))
+  {
+    path = server.arg("dir");
+  }
+  else
   {
     httpInvalidRequest();
     return;
@@ -424,8 +492,6 @@ void handleList()
 
   String parentDir;
   File root;
-  
-  String path = server.arg("path");
 
   if (path[0] != '/')
     path = "/" + path;
@@ -446,11 +512,12 @@ void handleList()
     root = fileSystem.open(path);
     if (root.isDirectory())
     {
-      int count=0;
+      int count = 0;
       txt = "[";
       while (File file = root.openNextFile())
       {
-        if (count++) {
+        if (count++)
+        {
           txt += ",";
         }
         txt += "{\"id\":";
@@ -486,7 +553,8 @@ void handleList()
       root.close();
     server.send(200, "application/json", txt);
   }
-  else {
+  else
+  {
     httpNotFound();
   }
   umountSD();
