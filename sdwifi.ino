@@ -106,7 +106,7 @@ void setupWebServer()
   server.on("/list", handleList);
   server.on("/rename", handleRename);
 
-  /* Tetsing: For compatibility with original Fysetc web app code */
+  /* Testing: For compatibility with original Fysetc web app code */
   server.on("/relinquish", HTTP_GET, []()
             { httpOK(); });
   server.on("/wificonnect", HTTP_POST, handleWiFiConnect);
@@ -503,7 +503,7 @@ void handleList()
 
   if (!mountSD())
   {
-    httpServiceUnavailable("SD Card Mount Failed");
+    httpServiceUnavailable("LIST:SDBUSY");
     return;
   }
 
@@ -576,7 +576,7 @@ void handleDownload(void)
 
   if (!mountSD())
   {
-    httpServiceUnavailable("SD Card Mount Failed");
+    httpServiceUnavailable("DOWNLOAD:SDBUSY");
     return;
   }
 
@@ -604,7 +604,7 @@ void handleDownload(void)
   }
   else
   {
-    httpNotFound("Path does not exist: " + path);
+    httpNotFound("DOWNLOAD:FileNotFound");
   }
   umountSD();
 }
@@ -642,7 +642,7 @@ void handleRename()
 
   if (!mountSD())
   {
-    httpServiceUnavailable("SD Card Mount Failed");
+    httpServiceUnavailable("RENAME:SDBUSY");
     return;
   }
   if (fileSystem.exists((char *)nameFrom.c_str()))
@@ -666,13 +666,13 @@ void handleRemove()
 {
   if (!server.hasArg("path"))
   {
-    httpInvalidRequest();
+    httpInvalidRequest("DELETE:BADARGS");
     return;
   }
 
   if (!mountSD())
   {
-    httpServiceUnavailable("SD Card Mount Failed");
+    httpServiceUnavailable("DELETE:SDBUSY");
     return;
   }
 
@@ -704,7 +704,7 @@ void handleSha1()
 
   if (!mountSD())
   {
-    httpServiceUnavailable("SD Card Mount Failed");
+    httpServiceUnavailable("SHA1:SDBUSY");
     return;
   }
 
@@ -803,7 +803,7 @@ void handleUploadProcessPUT()
   {
     if (!mountSD())
     {
-      httpServiceUnavailable("SD Card Mount Failed");
+      httpServiceUnavailable("UPLOAD:SDBUSY");
       return;
     }
     if (fileSystem.exists((char *)path.c_str()))
@@ -878,7 +878,8 @@ void handleUploadProcess()
   {
     if (!mountSD())
     {
-      httpServiceUnavailable("SD Card Mount Failed");
+      
+      httpServiceUnavailable("UPLOAD:SDBUSY");
       return;
     }
     if (fileSystem.exists((char *)path.c_str()))
