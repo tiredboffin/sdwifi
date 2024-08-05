@@ -17,12 +17,12 @@ The code is based on standard Arduino/ESP32 sketches and the orginal FYSETC [fir
 - compile and upload with arduino-cli (assuming the port is /dev/ttyUSB)
 
       cd sdwifi/
-      arduino-cli compile --profile sdwifi
-      arduino-cli upload  --profile sdwifi --port /dev/ttyUSB0
+      ./sketch build 
+      ./sketch upload
 
 - run monitor
 
-      arduino-cli monitor --port /dev/ttyUSB0
+      ./sketch monitor
 
 - if successful you should see "HTTP server started" message:
 
@@ -122,3 +122,15 @@ The server accepts the following commands:
    Get a list of files in / directory
     
     curl http://sdwifi.local/list?path=/ | jq
+
+## web application
+
+The server can also be used in a browser with the original [firmware](https://github.com/FYSETC/SdWiFiBrowser) web application.
+
+To build the filesystem with the web app:
+  - download the firmware source code
+  - copy ./data from the firmware directory into sdinfo/data 
+  - build sdinfo as described above and then execute
+
+    ./fs build upload
+
