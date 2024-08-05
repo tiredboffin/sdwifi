@@ -38,14 +38,20 @@ static const char *default_name = "sdwifi";
 
 #define WIFI_STA_TIMEOUT 5000
 
+#define HOST_ACTIVITY_GRACE_PERIOD_SECS 2
+
 WebServer server(80);
 
 Preferences prefs;
 File dataFile;
 fs::FS &fileSystem = SD_MMC;
+static volatile bool sd_mount_is_safe = false;
+static volatile bool isr_sense_pin_activity = false;
 
 static bool esp32_controls_sd = false;
 static bool is_mounted = false;
+
+void IRAM_ATTR isr(void);
 
 void setup(void)
 {
@@ -54,18 +60,48 @@ void setup(void)
   digitalWrite(SD_SWITCH_PIN, HIGH);
   Serial.setDebugOutput(true);
 
+  attachInterrupt(CS_SENSE_PIN,  isr, CHANGE);
+
   setupWiFi();
   SPIFFS.begin();
   setupWebServer();
   server.begin();
 }
 
+void IRAM_ATTR isr(void) {
+  detachInterrupt(CS_SENSE_PIN);
+  sd_mount_is_safe = false;
+  isr_sense_pin_activity = true;
+}
+
 void loop(void)
 {
+  static unsigned long previousMillis = millis();
+  static unsigned sense_pin_seconds_ago = 0;
+  
+  unsigned long currentMillis;
+  
+  
+  currentMillis = millis();
+  
   /* handle one client at a time */
   server.handleClient();
+ 
+  if ((currentMillis - previousMillis) > 1000) {
+    if (isr_sense_pin_activity) {
+      isr_sense_pin_activity = false;
+      sense_pin_seconds_ago = 0;
+      attachInterrupt(CS_SENSE_PIN,  isr, CHANGE);
+    } else {
+      sd_mount_is_safe  = ++sense_pin_seconds_ago >= HOST_ACTIVITY_GRACE_PERIOD_SECS;
+    }
+    previousMillis = currentMillis;
+  }
+
   delay(2);
+
 }
+
 
 void setupWiFi()
 {
@@ -180,6 +216,11 @@ static bool mountSD(void)
 
   log_i("SD Card mount");
 
+  if (!sd_mount_is_safe) {
+      log_i("SD Card mount: card is busy");
+      return false;
+  }
+  
   /* get control over flash NAND */
   if (!esp32_controls_sd)
   {
@@ -190,6 +231,7 @@ static bool mountSD(void)
     log_e("SD Card Mount Failed");
     if (!esp32_controls_sd)
       digitalWrite(SD_SWITCH_PIN, HIGH);
+    return false;
   }
   is_mounted = true;
   return true;
@@ -247,17 +289,31 @@ void handleInfo(void)
   String txt;
 
   uint8_t tmp[6];
-  mountSD();
   txt = "{\"info\":{\"filesystem\":{";
-  txt += "\"cardsize\":";
-  txt += SD_MMC.cardSize();
-  txt += ", \"totalbytes\":";
-  txt += SD_MMC.totalBytes();
-  txt += ",\"usedbytes\":";
-  txt += SD_MMC.usedBytes();
+  if (mountSD()) {
+    txt += "\"status\":\"free\",";
+    txt += "\"cardsize\":";
+    txt += SD_MMC.cardSize();
+    txt += ",\"totalbytes\":";
+    txt += SD_MMC.totalBytes();
+    txt += ",\"usedbytes\":";
+    txt += SD_MMC.usedBytes();
+    txt += "},";
+    umountSD();
+  } else {
+    txt += "\"status\":\"busy\"";
+    txt += "},";
+  }
+  txt += "\"cpu\":{";
+  txt += "\"model\":\"";
+  txt += ESP.getChipModel();
+  txt += "\",";
+  txt += "\"revision\":";
+  txt += ESP.getChipRevision();
+  txt += ",";
+  txt += "\"coreid\":";
+  txt += xPortGetCoreID();
   txt += "},";
-  umountSD();
-
   txt += "\"network\":{";
   txt += "\"SSID\":\"";
   txt += WiFi.SSID();
