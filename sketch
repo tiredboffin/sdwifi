@@ -78,5 +78,8 @@ if [[ "$1" == "test" ]]; then
 fi
 
 if [[ "$1" == "monitor" ]]; then
+    if [[ $2 ]]; then
+	PORT=$2
+    fi
     arduino-cli monitor --port $PORT --config baudrate=115200,rts=off,dtr=off
 fi
