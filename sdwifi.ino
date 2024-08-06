@@ -60,7 +60,7 @@ void setup(void)
   digitalWrite(SD_SWITCH_PIN, HIGH);
   Serial.setDebugOutput(true);
 
-  attachInterrupt(CS_SENSE_PIN,  isr, CHANGE);
+  attachInterrupt(CS_SENSE_PIN, isr, CHANGE);
 
   setupWiFi();
   SPIFFS.begin();
@@ -68,7 +68,8 @@ void setup(void)
   server.begin();
 }
 
-void IRAM_ATTR isr(void) {
+void IRAM_ATTR isr(void)
+{
   detachInterrupt(CS_SENSE_PIN);
   sd_mount_is_safe = false;
   isr_sense_pin_activity = true;
@@ -78,30 +79,31 @@ void loop(void)
 {
   static unsigned long previousMillis = millis();
   static unsigned sense_pin_seconds_ago = 0;
-  
+
   unsigned long currentMillis;
-  
-  
+
   currentMillis = millis();
-  
+
   /* handle one client at a time */
   server.handleClient();
- 
-  if ((currentMillis - previousMillis) > 1000) {
-    if (isr_sense_pin_activity) {
+
+  if ((currentMillis - previousMillis) > 1000)
+  {
+    if (isr_sense_pin_activity)
+    {
       isr_sense_pin_activity = false;
       sense_pin_seconds_ago = 0;
-      attachInterrupt(CS_SENSE_PIN,  isr, CHANGE);
-    } else {
-      sd_mount_is_safe  = ++sense_pin_seconds_ago >= HOST_ACTIVITY_GRACE_PERIOD_SECS;
+      attachInterrupt(CS_SENSE_PIN, isr, CHANGE);
+    }
+    else
+    {
+      sd_mount_is_safe = ++sense_pin_seconds_ago >= HOST_ACTIVITY_GRACE_PERIOD_SECS;
     }
     previousMillis = currentMillis;
   }
 
   delay(2);
-
 }
-
 
 void setupWiFi()
 {
@@ -216,11 +218,12 @@ static bool mountSD(void)
 
   log_i("SD Card mount");
 
-  if (!sd_mount_is_safe) {
-      log_i("SD Card mount: card is busy");
-      return false;
+  if (!sd_mount_is_safe)
+  {
+    log_i("SD Card mount: card is busy");
+    return false;
   }
-  
+
   /* get control over flash NAND */
   if (!esp32_controls_sd)
   {
@@ -290,7 +293,8 @@ void handleInfo(void)
 
   uint8_t tmp[6];
   txt = "{\"info\":{\"filesystem\":{";
-  if (mountSD()) {
+  if (mountSD())
+  {
     txt += "\"status\":\"free\",";
     txt += "\"cardsize\":";
     txt += SD_MMC.cardSize();
@@ -300,7 +304,9 @@ void handleInfo(void)
     txt += SD_MMC.usedBytes();
     txt += "},";
     umountSD();
-  } else {
+  }
+  else
+  {
     txt += "\"status\":\"busy\"";
     txt += "},";
   }
@@ -457,17 +463,17 @@ void handleExperimental(void)
       {
         digitalWrite(SD_SWITCH_PIN, LOW);
         esp32_controls_sd = true;
-        txt += " SD controlled by ESP32\n";
+        txt += " SD controlled by ESP32";
       }
       else if (v == "host" || v == "high")
       {
         digitalWrite(SD_SWITCH_PIN, HIGH);
         esp32_controls_sd = false;
-        txt += " SD controlled by Host\n";
+        txt += " SD controlled by Host";
       }
       else
       {
-        txt += " Ignored\n";
+        txt += " Ignored";
       }
     }
     else if (n == "power")
@@ -489,7 +495,7 @@ void handleExperimental(void)
       }
       else
       {
-        txt += " Ignored\n";
+        txt += " Ignored";
       }
     }
     else if (n == "sleep")
@@ -515,12 +521,12 @@ void handleExperimental(void)
       }
       else
       {
-        txt += " Ignored\n";
+        txt += " Ignored";
       }
     }
     else
     {
-      txt += " Ignored\n";
+      txt += " Ignored";
     }
   }
   httpOK(txt);
@@ -934,7 +940,7 @@ void handleUploadProcess()
   {
     if (!mountSD())
     {
-      
+
       httpServiceUnavailable("UPLOAD:SDBUSY");
       return;
     }
