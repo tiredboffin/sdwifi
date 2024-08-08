@@ -132,5 +132,5 @@ To build the filesystem with the web app:
   - copy ./data from the firmware directory into sdinfo/data 
   - build sdinfo as described above and then execute
 
-    ./fs build upload
+        ./fs build upload
 
