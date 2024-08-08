@@ -30,6 +30,7 @@
 static const char *default_name = "sdwifi";
 
 #define SD_SWITCH_PIN GPIO_NUM_26
+#define SD_POWER_PIN GPIO_NUM_27
 #define CS_SENSE_PIN GPIO_NUM_33
 
 #define PREF_RW_MODE false
@@ -38,29 +39,44 @@ static const char *default_name = "sdwifi";
 
 #define WIFI_STA_TIMEOUT 5000
 
-#define HOST_ACTIVITY_GRACE_PERIOD_SECS 2
+#define HOST_ACTIVITY_GRACE_PERIOD_MILLIS 2000
+
+enum
+{
+  MOUNT_OK,
+  MOUNT_BUSY,
+  MOUNT_FAILED
+};
 
 WebServer server(80);
 
 Preferences prefs;
 File dataFile;
 fs::FS &fileSystem = SD_MMC;
-static volatile bool sd_mount_is_safe = false;
-static volatile bool isr_sense_pin_activity = false;
+
+volatile struct {
+  bool mount_is_safe = false;
+  bool activity_detected = false;
+  bool host_activity_detected = false;
+  unsigned isr_counter = 0;
+  unsigned long host_last_activity_millis;
+} sd_state;
 
 static bool esp32_controls_sd = false;
-static bool is_mounted = false;
+static bool fs_is_mounted = false;
 
-void IRAM_ATTR isr(void);
+void IRAM_ATTR sd_isr(void);
+
 
 void setup(void)
 {
+  sd_state.host_last_activity_millis = millis();
+  attachInterrupt(CS_SENSE_PIN, sd_isr, CHANGE);
+
   /* Make SD card available to the Host early in the process */
   pinMode(SD_SWITCH_PIN, OUTPUT);
   digitalWrite(SD_SWITCH_PIN, HIGH);
   Serial.setDebugOutput(true);
-
-  attachInterrupt(CS_SENSE_PIN, isr, CHANGE);
 
   setupWiFi();
   SPIFFS.begin();
@@ -68,41 +84,47 @@ void setup(void)
   server.begin();
 }
 
-void IRAM_ATTR isr(void)
+void IRAM_ATTR sd_isr(void)
 {
   detachInterrupt(CS_SENSE_PIN);
-  sd_mount_is_safe = false;
-  isr_sense_pin_activity = true;
+  sd_state.isr_counter++;
+  sd_state.activity_detected = true;
+  if (digitalRead(SD_SWITCH_PIN) == HIGH) {
+    sd_state.mount_is_safe = false;
+    sd_state.host_activity_detected = true;
+    sd_state.host_last_activity_millis = millis();
+  }
+}
+
+/* should go into monitor task */
+void monitor_sd(void) {
+  static unsigned long previousMillis;
+  unsigned long currentMillis = millis();
+  if ((currentMillis - previousMillis) > 100)
+  {
+    if (sd_state.activity_detected)
+    {
+      sd_state.activity_detected = false;
+      if (sd_state.host_activity_detected) {
+        sd_state.host_activity_detected  = false;
+        sd_state.host_last_activity_millis = millis(); //overwrite to be more conservative
+      }
+      attachInterrupt(CS_SENSE_PIN, sd_isr, CHANGE);
+    }
+    sd_state.mount_is_safe = (currentMillis - sd_state.host_last_activity_millis) >= HOST_ACTIVITY_GRACE_PERIOD_MILLIS;
+    previousMillis = currentMillis;
+  }
 }
 
 void loop(void)
 {
-  static unsigned long previousMillis = millis();
-  static unsigned sense_pin_seconds_ago = 0;
-
-  unsigned long currentMillis;
-
-  currentMillis = millis();
-
+ 
+  monitor_sd();
+  
   /* handle one client at a time */
   server.handleClient();
-
-  if ((currentMillis - previousMillis) > 1000)
-  {
-    if (isr_sense_pin_activity)
-    {
-      isr_sense_pin_activity = false;
-      sense_pin_seconds_ago = 0;
-      attachInterrupt(CS_SENSE_PIN, isr, CHANGE);
-    }
-    else
-    {
-      sd_mount_is_safe = ++sense_pin_seconds_ago >= HOST_ACTIVITY_GRACE_PERIOD_SECS;
-    }
-    previousMillis = currentMillis;
-  }
-
   delay(2);
+
 }
 
 void setupWiFi()
@@ -207,21 +229,26 @@ static bool setupSTA(void)
   }
 }
 
-/* Mount SD card */
-static bool mountSD(void)
+static inline bool is_safe_to_mount(void)
 {
-  if (is_mounted)
+  return sd_state.mount_is_safe;
+}
+
+/* Mount SD card */
+static int mountSD(void)
+{
+  if (fs_is_mounted)
   {
     log_e("Double mount: ignore");
-    return true;
+    return MOUNT_OK;
   }
 
   log_i("SD Card mount");
 
-  if (!sd_mount_is_safe)
+  if (!sd_state.mount_is_safe)
   {
     log_i("SD Card mount: card is busy");
-    return false;
+    return MOUNT_BUSY;
   }
 
   /* get control over flash NAND */
@@ -234,16 +261,16 @@ static bool mountSD(void)
     log_e("SD Card Mount Failed");
     if (!esp32_controls_sd)
       digitalWrite(SD_SWITCH_PIN, HIGH);
-    return false;
+    return MOUNT_FAILED;
   }
-  is_mounted = true;
-  return true;
+  fs_is_mounted = true;
+  return MOUNT_OK;
 }
 
 /* Unmount SD card */
 static void umountSD(void)
 {
-  if (!is_mounted)
+  if (!fs_is_mounted)
   {
     log_e("Double Unmount: ignore");
     return;
@@ -253,7 +280,7 @@ static void umountSD(void)
   {
     digitalWrite(SD_SWITCH_PIN, HIGH);
   }
-  is_mounted = false;
+  fs_is_mounted = false;
   log_i("In SD Card Unmount");
 }
 
@@ -293,8 +320,9 @@ void handleInfo(void)
 
   uint8_t tmp[6];
   txt = "{\"info\":{\"filesystem\":{";
-  if (mountSD())
+  switch (mountSD())
   {
+  case MOUNT_OK:
     txt += "\"status\":\"free\",";
     txt += "\"cardsize\":";
     txt += SD_MMC.cardSize();
@@ -302,14 +330,23 @@ void handleInfo(void)
     txt += SD_MMC.totalBytes();
     txt += ",\"usedbytes\":";
     txt += SD_MMC.usedBytes();
-    txt += "},";
     umountSD();
-  }
-  else
-  {
+    break;
+  case MOUNT_BUSY:
     txt += "\"status\":\"busy\"";
-    txt += "},";
+    break;
+  default:
+    txt += "\"status\":\"failed\"";
+    break;
   }
+  txt += "},";
+  txt += "\"isr\":{";
+  txt += "\"count\":";
+  txt += sd_state.isr_counter;
+  txt += ",";
+  txt += "\"activity_millis_ago\":";
+  txt += millis()-sd_state.host_last_activity_millis;
+  txt += "},";
   txt += "\"cpu\":{";
   txt += "\"model\":\"";
   txt += ESP.getChipModel();
@@ -319,6 +356,12 @@ void handleInfo(void)
   txt += ",";
   txt += "\"coreid\":";
   txt += xPortGetCoreID();
+  txt += ",";
+  txt += "\"millis\":";
+  txt += millis();
+  txt += ",";
+  txt += "\"reset_reason\":";
+  txt += esp_reset_reason();
   txt += "},";
   txt += "\"network\":{";
   txt += "\"SSID\":\"";
@@ -476,6 +519,31 @@ void handleExperimental(void)
         txt += " Ignored";
       }
     }
+    else if (n == "io27")
+    {
+      txt += " io27 ";
+      if (v == "output")
+      {
+        pinMode(SD_POWER_PIN, OUTPUT);
+        txt += "OUTPUT";
+      }
+      else if (v == "low")
+      {
+        digitalWrite(SD_POWER_PIN, LOW);
+        txt += "LOW";
+      }
+      else if (v == "high")
+      {
+        digitalWrite(SD_POWER_PIN, HIGH);
+        txt += "HIGH";
+      }
+      else if (v == "read")
+      {
+        digitalRead(SD_POWER_PIN);
+        txt += "read ";
+        txt += digitalRead(SD_POWER_PIN);
+      }
+    }
     else if (n == "power")
     {
       if (v == "restart" || v == "reboot" || v == "reset")
@@ -548,7 +616,7 @@ void handleList()
   }
   else
   {
-    httpInvalidRequest();
+    httpInvalidRequest("LIST:BADARGS");
     return;
   }
 
@@ -563,7 +631,7 @@ void handleList()
   parentDir = String(path);
   parentDir[strrchr(path.c_str(), '/') - path.c_str() + 1] = 0;
 
-  if (!mountSD())
+  if (mountSD() != MOUNT_OK)
   {
     httpServiceUnavailable("LIST:SDBUSY");
     return;
@@ -628,7 +696,7 @@ void handleDownload(void)
 
   if (!server.hasArg("path"))
   {
-    httpInvalidRequest();
+    httpInvalidRequest("DOWNLOAD:BADARGS");
     return;
   }
   String path = server.arg("path");
@@ -636,7 +704,7 @@ void handleDownload(void)
   if (path[0] != '/')
     path = "/" + path;
 
-  if (!mountSD())
+  if (mountSD() != MOUNT_OK)
   {
     httpServiceUnavailable("DOWNLOAD:SDBUSY");
     return;
@@ -687,7 +755,7 @@ void handleRename()
       nameTo = "/" + v;
     else
     {
-      httpInvalidRequest("Unrecognized parameter in 'rename' command");
+      httpInvalidRequest("RENAME:BADARGS");
       return;
     }
   }
@@ -702,7 +770,7 @@ void handleRename()
     return;
   }
 
-  if (!mountSD())
+  if (mountSD() != MOUNT_OK)
   {
     httpServiceUnavailable("RENAME:SDBUSY");
     return;
@@ -732,7 +800,7 @@ void handleRemove()
     return;
   }
 
-  if (!mountSD())
+  if (mountSD() != MOUNT_OK)
   {
     httpServiceUnavailable("DELETE:SDBUSY");
     return;
@@ -760,11 +828,11 @@ void handleSha1()
 
   if (!server.hasArg("path"))
   {
-    httpInvalidRequest();
+    httpInvalidRequest("SHA1:BADARGS");
     return;
   }
 
-  if (!mountSD())
+  if (mountSD() != MOUNT_OK)
   {
     httpServiceUnavailable("SHA1:SDBUSY");
     return;
@@ -846,7 +914,7 @@ void handleUploadProcessPUT()
   HTTPRaw &reqState = server.raw();
   if (&reqState == nullptr)
   {
-    httpInvalidRequest();
+    httpInvalidRequest("UPLOAD:BADARGS");
     return;
   };
 
@@ -854,7 +922,7 @@ void handleUploadProcessPUT()
 
   if (path == nullptr || path == "")
   {
-    httpInvalidRequest();
+    httpInvalidRequest("UPLOAD:BADARGS");;
     return;
   }
 
@@ -863,7 +931,7 @@ void handleUploadProcessPUT()
 
   if (reqState.status == RAW_START)
   {
-    if (!mountSD())
+    if (mountSD() != MOUNT_OK)
     {
       httpServiceUnavailable("UPLOAD:SDBUSY");
       return;
@@ -921,7 +989,7 @@ void handleUploadProcess()
   HTTPUpload &reqState = server.upload();
   if (&reqState == nullptr)
   {
-    httpInvalidRequest();
+    httpInvalidRequest("UPLOAD:BADARGS");
     return;
   };
 
@@ -929,7 +997,7 @@ void handleUploadProcess()
 
   if (path == nullptr || path == "")
   {
-    httpInvalidRequest();
+    httpInvalidRequest("UPLOAD:BADARGS");
     return;
   }
 
@@ -938,7 +1006,7 @@ void handleUploadProcess()
 
   if (reqState.status == UPLOAD_FILE_START)
   {
-    if (!mountSD())
+    if (mountSD() != MOUNT_OK)
     {
 
       httpServiceUnavailable("UPLOAD:SDBUSY");
