@@ -54,7 +54,8 @@ Preferences prefs;
 File dataFile;
 fs::FS &fileSystem = SD_MMC;
 
-volatile struct {
+volatile struct
+{
   bool mount_is_safe = false;
   bool activity_detected = false;
   bool host_activity_detected = false;
@@ -67,14 +68,14 @@ static bool fs_is_mounted = false;
 
 void IRAM_ATTR sd_isr(void);
 
-
 void setup(void)
 {
   sd_state.host_last_activity_millis = millis();
+
+  pinMode(SD_SWITCH_PIN, OUTPUT);
   attachInterrupt(CS_SENSE_PIN, sd_isr, CHANGE);
 
   /* Make SD card available to the Host early in the process */
-  pinMode(SD_SWITCH_PIN, OUTPUT);
   digitalWrite(SD_SWITCH_PIN, HIGH);
   Serial.setDebugOutput(true);
 
@@ -89,7 +90,8 @@ void IRAM_ATTR sd_isr(void)
   detachInterrupt(CS_SENSE_PIN);
   sd_state.isr_counter++;
   sd_state.activity_detected = true;
-  if (digitalRead(SD_SWITCH_PIN) == HIGH) {
+  if (digitalRead(SD_SWITCH_PIN) == HIGH)
+  {
     sd_state.mount_is_safe = false;
     sd_state.host_activity_detected = true;
     sd_state.host_last_activity_millis = millis();
@@ -97,7 +99,8 @@ void IRAM_ATTR sd_isr(void)
 }
 
 /* should go into monitor task */
-void monitor_sd(void) {
+void monitor_sd(void)
+{
   static unsigned long previousMillis;
   unsigned long currentMillis = millis();
   if ((currentMillis - previousMillis) > 100)
@@ -105,9 +108,10 @@ void monitor_sd(void) {
     if (sd_state.activity_detected)
     {
       sd_state.activity_detected = false;
-      if (sd_state.host_activity_detected) {
-        sd_state.host_activity_detected  = false;
-        sd_state.host_last_activity_millis = millis(); //overwrite to be more conservative
+      if (sd_state.host_activity_detected)
+      {
+        sd_state.host_activity_detected = false;
+        sd_state.host_last_activity_millis = millis(); // overwrite to be more conservative
       }
       attachInterrupt(CS_SENSE_PIN, sd_isr, CHANGE);
     }
@@ -118,13 +122,12 @@ void monitor_sd(void) {
 
 void loop(void)
 {
- 
+
   monitor_sd();
-  
+
   /* handle one client at a time */
   server.handleClient();
   delay(2);
-
 }
 
 void setupWiFi()
@@ -234,6 +237,22 @@ static inline bool is_safe_to_mount(void)
   return sd_state.mount_is_safe;
 }
 
+static inline void sd_lock(void)
+{
+  if (!esp32_controls_sd)
+  {
+    digitalWrite(SD_SWITCH_PIN, LOW);
+  }
+}
+
+static inline void sd_unlock(void)
+{
+  if (!esp32_controls_sd)
+  {
+    digitalWrite(SD_SWITCH_PIN, HIGH);
+  }
+}
+
 /* Mount SD card */
 static int mountSD(void)
 {
@@ -252,15 +271,11 @@ static int mountSD(void)
   }
 
   /* get control over flash NAND */
-  if (!esp32_controls_sd)
-  {
-    digitalWrite(SD_SWITCH_PIN, LOW);
-  }
+  sd_lock();
   if (!SD_MMC.begin())
   {
     log_e("SD Card Mount Failed");
-    if (!esp32_controls_sd)
-      digitalWrite(SD_SWITCH_PIN, HIGH);
+    sd_unlock();
     return MOUNT_FAILED;
   }
   fs_is_mounted = true;
@@ -276,10 +291,7 @@ static void umountSD(void)
     return;
   }
   SD_MMC.end();
-  if (!esp32_controls_sd)
-  {
-    digitalWrite(SD_SWITCH_PIN, HIGH);
-  }
+  sd_unlock();
   fs_is_mounted = false;
   log_i("In SD Card Unmount");
 }
@@ -326,10 +338,13 @@ void handleInfo(void)
     txt += "\"status\":\"free\",";
     txt += "\"cardsize\":";
     txt += SD_MMC.cardSize();
+#if 0
+    //BUGBUG: the 1st after mount() call to f_getfree() takes about a second (?)
     txt += ",\"totalbytes\":";
     txt += SD_MMC.totalBytes();
     txt += ",\"usedbytes\":";
     txt += SD_MMC.usedBytes();
+#endif
     umountSD();
     break;
   case MOUNT_BUSY:
@@ -345,7 +360,7 @@ void handleInfo(void)
   txt += sd_state.isr_counter;
   txt += ",";
   txt += "\"activity_millis_ago\":";
-  txt += millis()-sd_state.host_last_activity_millis;
+  txt += millis() - sd_state.host_last_activity_millis;
   txt += "},";
   txt += "\"cpu\":{";
   txt += "\"model\":\"";
@@ -842,64 +857,63 @@ void handleSha1()
   if (path[0] != '/')
     path = "/" + path;
 
-  if (fileSystem.exists((char *)path.c_str()))
+  if (!fileSystem.exists((char *)path.c_str()) || !(dataFile = fileSystem.open(path.c_str(), FILE_READ)))
   {
-    dataFile = fileSystem.open(path.c_str(), FILE_READ);
-    if (!dataFile.isDirectory())
-    {
-      size_t fileSize = dataFile.size();
+    umountSD();
+    httpNotFound();
+    return;
+  };
+  if (dataFile.isDirectory())
+  {
+    dataFile.close();
+    umountSD();
+    httpNotAllowed();
+    return;
+  }
+  size_t fileSize = dataFile.size();
 
-      log_i("sha1 file %s size  %lu", path.c_str(), fileSize);
+  log_i("sha1 file %s size  %lu", path.c_str(), fileSize);
 
-      mbedtls_sha1_context ctx;
-      mbedtls_sha1_init(&ctx);
-      mbedtls_sha1_starts_ret(&ctx);
+  mbedtls_sha1_context ctx;
+  mbedtls_sha1_init(&ctx);
+  mbedtls_sha1_starts_ret(&ctx);
 
 #define bufferSize 1024
 
-      uint8_t sha1_buffer[bufferSize];
+  uint8_t sha1_buffer[bufferSize];
 
-      int N = fileSize / bufferSize;
-      int r = fileSize % bufferSize;
+  int N = fileSize / bufferSize;
+  int r = fileSize % bufferSize;
 
-      for (int i = 0; i < N; i++)
-      {
-        dataFile.readBytes((char *)sha1_buffer, bufferSize);
-        mbedtls_sha1_update_ret(&ctx, sha1_buffer, bufferSize);
-      }
-      if (r)
-      {
-        dataFile.readBytes((char *)sha1_buffer, r);
-        mbedtls_sha1_update_ret(&ctx, sha1_buffer, r);
-      }
-
-      String result = "{\"sha1sum\": \"";
-      {
-        unsigned char tmp[20];
-        mbedtls_sha1_finish_ret(&ctx, tmp);
-        mbedtls_sha1_free(&ctx);
-
-        for (int i = 0; i < sizeof(tmp); i++)
-        {
-          if (tmp[i] < 0x10)
-            result += "0";
-          result += String(tmp[i], 16);
-        }
-      }
-      result += "\"}";
-      server.send(200, "application/json", result);
-    }
-    else
-    {
-      httpNotAllowed("Path is a directory");
-    }
-    dataFile.close();
-  }
-  else
+  for (int i = 0; i < N; i++)
   {
-    httpNotFound();
+    dataFile.readBytes((char *)sha1_buffer, bufferSize);
+    mbedtls_sha1_update_ret(&ctx, sha1_buffer, bufferSize);
   }
+  if (r)
+  {
+    dataFile.readBytes((char *)sha1_buffer, r);
+    mbedtls_sha1_update_ret(&ctx, sha1_buffer, r);
+  }
+  dataFile.close();
   umountSD();
+
+  String result = "{\"sha1sum\": \"";
+  {
+    unsigned char tmp[20];
+    mbedtls_sha1_finish_ret(&ctx, tmp);
+    mbedtls_sha1_free(&ctx);
+
+    for (int i = 0; i < sizeof(tmp); i++)
+    {
+      if (tmp[i] < 0x10)
+        result += "0";
+      result += String(tmp[i], 16);
+    }
+  }
+  result += "\"}";
+  server.send(200, "application/json", result);
+  return;
 }
 
 /* CMD Upload a file */
@@ -922,7 +936,8 @@ void handleUploadProcessPUT()
 
   if (path == nullptr || path == "")
   {
-    httpInvalidRequest("UPLOAD:BADARGS");;
+    httpInvalidRequest("UPLOAD:BADARGS");
+    ;
     return;
   }
 
@@ -1087,6 +1102,11 @@ inline void httpNotFound(void)
 inline void httpNotFound(String msg)
 {
   server.send(404, "text/plain", msg + "\r\n");
+}
+
+inline void httpNotAllowed()
+{
+  server.send(405, "text/plain");
 }
 
 inline void httpNotAllowed(String msg)
