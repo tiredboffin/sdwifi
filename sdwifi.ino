@@ -111,7 +111,7 @@ void monitor_sd(void)
       if (sd_state.host_activity_detected)
       {
         sd_state.host_activity_detected = false;
-        sd_state.host_last_activity_millis = millis(); // overwrite to be more conservative
+        sd_state.host_last_activity_millis = currentMillis; // overwrite to be more conservative
       }
       attachInterrupt(CS_SENSE_PIN, sd_isr, CHANGE);
     }
@@ -618,6 +618,18 @@ void handleExperimental(void)
   httpOK(txt);
 }
 
+#include "ff.h"
+void get_sfn(char *out_sfn, File *file)
+{
+#if FF_USE_LFN
+  FILINFO info;
+  f_stat(file->path(), &info);
+  strncpy(out_sfn, info.altname, FF_SFN_BUF + 1);
+#else /* FF_USE_LFN */
+  strncpy(out_sfn, file->name().c_str(), FF_SFN_BUF + 1);
+#endif /* FF_USE_LFN */
+}
+
 /* CMD list */
 void handleList()
 {
@@ -658,12 +670,16 @@ void handleList()
   if (fileSystem.exists((char *)path.c_str()))
   {
     root = fileSystem.open(path);
+
+    char sfn[FF_SFN_BUF + 1];
     if (root.isDirectory())
     {
       int count = 0;
       txt = "[";
       while (File file = root.openNextFile())
       {
+        get_sfn(sfn, &file);
+
         if (count++)
         {
           txt += ",";
@@ -681,22 +697,28 @@ void handleList()
         }
         txt += "\"name\":\"";
         txt += file.name();
-        txt += "\",";
-        txt += "\"size\":";
+        txt += "\",\"size\":";
         txt += file.size();
-        txt += "}";
+        txt += ",\"sfn\":\"";
+        txt += sfn;
+        txt += "\"}";
       }
       txt += "]";
     }
     else
     {
+      get_sfn(sfn, &root);
+
       txt = "{\"item\": {\"type\":\"file\",";
       txt += "\"name\":\"";
       txt += root.name();
-      txt += "\"size\":\"";
+      txt += "\",\"size\":";
       txt += root.size();
+      txt += ",\"sfn\":\"";
+      txt += sfn;
       txt += "\"}}";
     }
+
     if (root)
       root.close();
     server.send(200, "application/json", txt);
