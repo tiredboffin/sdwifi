@@ -343,13 +343,11 @@ void handleInfo(void)
     txt += "\"status\":\"free\",";
     txt += "\"cardsize\":";
     txt += SD_MMC.cardSize();
-#if 0
-    //BUGBUG: the 1st after mount() call to f_getfree() takes about a second (?)
     txt += ",\"totalbytes\":";
     txt += SD_MMC.totalBytes();
     txt += ",\"usedbytes\":";
     txt += SD_MMC.usedBytes();
-#endif
+
     umountSD();
     break;
   case MOUNT_BUSY:
