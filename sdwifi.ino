@@ -152,6 +152,7 @@ void setupWiFi()
 }
 void setupWebServer()
 {
+  server.enableCORS();
   /* TODO: rethink the API to simplify scripting  */
   server.on("/ping", []()
             { httpOK(); });
@@ -178,8 +179,12 @@ void setupWebServer()
 
   /* Static content */
   server.serveStatic("/", SPIFFS, "/");
-  server.onNotFound([]()
-                    { httpNotFound(); });
+  server.onNotFound([]() {
+    switch(server.method()) {
+      case HTTP_OPTIONS: httpOK(); break;
+      default: httpNotFound(); break;
+    }
+  });
 
   log_i("HTTP server started");
 }
