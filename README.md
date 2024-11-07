@@ -42,7 +42,13 @@ The server accepts the following commands:
      remove   - remove a file
      rename   - rename a file
      sha1     - get sha1 sum of a file
-     list     - get dir/file info
+     list     - get file info
+
+ #### directory operations
+
+     mkdir    - create a directory on the SD card
+     rmdir    - remove a directory (has to be empty)
+     list     - get all file info in a directory
  
  #### config   - change wifi settings
  
@@ -103,6 +109,14 @@ The server accepts the following commands:
     
     curl http://sdwifi.local/rename?from=ffboot_new.bin&to=ffboot.bin
  
+   Create a directory
+    
+    curl http://sdwifi.local/mkdir?path=boot
+  
+   Remove a directory
+    
+    curl http://sdwifi.local/rmdir?path=boot
+
    Give permanent control over SD to ESP32, blocks access to NAND SD card from the host side
      
     curl http://sdwifi.local/exp?io26=esp32

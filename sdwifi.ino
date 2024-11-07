@@ -169,6 +169,8 @@ void setupWebServer()
   server.on("/remove", handleRemove);
   server.on("/list", handleList);
   server.on("/rename", handleRename);
+  server.on("/mkdir", handleMkdir);
+  server.on("/rmdir", handleRmdir);
 
   /* Testing: For compatibility with original Fysetc web app code */
   server.on("/relinquish", HTTP_GET, []()
@@ -1029,6 +1031,83 @@ void handleUploadProcessPUT()
   }
 }
 #endif
+
+void handleMkdir()
+{
+  if (!server.hasArg("path"))
+  {
+    httpInvalidRequest("MKDIR:BADARGS");
+    return;
+  }
+
+  if (mountSD() != MOUNT_OK)
+  {
+    httpServiceUnavailable("MKDIR:SDBUSY");
+    return;
+  }
+
+  String path = server.arg("path");
+
+  if (path[0] != '/')
+  {
+    path = "/" + path;
+  }
+
+  if (fileSystem.exists(path) || fileSystem.mkdir(path))
+  {
+    httpOK();
+  }
+  else
+  {
+    httpNotFound();
+  }
+
+  umountSD();
+}
+
+void handleRmdir()
+{
+  if (!server.hasArg("path"))
+  {
+    httpInvalidRequest("RMDIR:BADARGS");
+    return;
+  }
+
+  if (mountSD() != MOUNT_OK)
+  {
+    httpServiceUnavailable("RMDIR:SDBUSY");
+    return;
+  }
+
+  String path = server.arg("path");
+
+  if (path[0] != '/')
+  {
+    path = "/" + path;
+  }
+
+  /* Trying to delete root */
+  if (path.length() < 2)
+  {
+    httpInvalidRequest("RMDIR:BADARGS");
+    return;
+  }
+
+  if (!fileSystem.exists(path))
+  {
+    httpNotFound();
+    return;
+  }
+
+  if (!fileSystem.rmdir(path))
+  {
+    httpInternalError();
+    return;
+  }
+
+  httpOK();
+  umountSD();
+}
 
 void handleUploadProcess()
 {
