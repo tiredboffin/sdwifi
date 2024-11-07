@@ -650,16 +650,12 @@ void handleList()
     return;
   }
 
-  String parentDir;
   File root;
 
   if (path[0] != '/')
     path = "/" + path;
 
   String txt;
-
-  parentDir = String(path);
-  parentDir[strrchr(path.c_str(), '/') - path.c_str() + 1] = 0;
 
   if (mountSD() != MOUNT_OK)
   {
@@ -670,6 +666,10 @@ void handleList()
   if (fileSystem.exists((char *)path.c_str()))
   {
     root = fileSystem.open(path);
+
+    // Chunked mode
+    server.setContentLength(CONTENT_LENGTH_UNKNOWN);
+    server.send(200, "application/json", "");
 
     char sfn[FF_SFN_BUF + 1];
     if (root.isDirectory())
@@ -702,6 +702,12 @@ void handleList()
         txt += ",\"sfn\":\"";
         txt += sfn;
         txt += "\"}";
+
+        if (txt.length() > 1024)
+        {
+          server.sendContent(txt);
+          txt = "";
+        }
       }
       txt += "]";
     }
@@ -721,7 +727,8 @@ void handleList()
 
     if (root)
       root.close();
-    server.send(200, "application/json", txt);
+
+    server.sendContent(txt);
   }
   else
   {
