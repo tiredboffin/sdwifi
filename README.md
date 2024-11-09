@@ -4,9 +4,9 @@ simple http server to upload files to [FYSETC SD WiFi Pro card](https://github.c
 
 ## description
  
-The primary use case is my research project on Fujifilm camera custom boot code. For the project I was looking for a convenient way to wirelessly transfer experimental fimrware files to and from SD card that is inserted into the camera slot when the camera's native WiFi cannot be used for that purpose. Otherwise to update/collect the files I had to physically transfser the SD card itself.
+The main use case for this project is my research on custom boot code for Fujifilm cameras. I needed an easy way to wirelessly transfer experimental firmware files to and from an SD card inserted in the camera. Without this setup, I would have to physically remove and transfer the SD card every time I needed to update or collect files.
 
-While the use case is very specific to my needs the server may still prove to be useful in other similar simple scenarios when it could be reasonably guaranteed by some means that the SD card is not used actively by the host (camera, printer etc) at the time this server is accessing the card. Or if the host is capable to recover gracefully from sporadic SD card access errors.
+While my use case is pretty specific, this server could still be useful in other simple scenarios—provided you can reasonably ensure the SD card isn't actively being used by the host (like a camera, printer, etc.) while the server is accessing it. Alternatively, it could work if the host can handle occasional SD card access errors gracefully.
 
 The code is based on standard Arduino/ESP32 sketches and the orginal FYSETC [firmware](https://github.com/FYSETC/SdWiFiBrowser). 
 
