@@ -111,7 +111,7 @@ void monitor_sd(void)
       if (sd_state.host_activity_detected)
       {
         sd_state.host_activity_detected = false;
-        sd_state.host_last_activity_millis = millis(); // overwrite to be more conservative
+        sd_state.host_last_activity_millis = currentMillis; // overwrite to be more conservative
       }
       attachInterrupt(CS_SENSE_PIN, sd_isr, CHANGE);
     }
@@ -152,6 +152,7 @@ void setupWiFi()
 }
 void setupWebServer()
 {
+  server.enableCORS();
   /* TODO: rethink the API to simplify scripting  */
   server.on("/ping", []()
             { httpOK(); });
@@ -168,6 +169,8 @@ void setupWebServer()
   server.on("/remove", handleRemove);
   server.on("/list", handleList);
   server.on("/rename", handleRename);
+  server.on("/mkdir", handleMkdir);
+  server.on("/rmdir", handleRmdir);
 
   /* Testing: For compatibility with original Fysetc web app code */
   server.on("/relinquish", HTTP_GET, []()
@@ -178,8 +181,12 @@ void setupWebServer()
 
   /* Static content */
   server.serveStatic("/", SPIFFS, "/");
-  server.onNotFound([]()
-                    { httpNotFound(); });
+  server.onNotFound([]() {
+    switch(server.method()) {
+      case HTTP_OPTIONS: httpOK(); break;
+      default: httpNotFound(); break;
+    }
+  });
 
   log_i("HTTP server started");
 }
@@ -338,13 +345,11 @@ void handleInfo(void)
     txt += "\"status\":\"free\",";
     txt += "\"cardsize\":";
     txt += SD_MMC.cardSize();
-#if 0
-    //BUGBUG: the 1st after mount() call to f_getfree() takes about a second (?)
     txt += ",\"totalbytes\":";
     txt += SD_MMC.totalBytes();
     txt += ",\"usedbytes\":";
     txt += SD_MMC.usedBytes();
-#endif
+
     umountSD();
     break;
   case MOUNT_BUSY:
@@ -615,6 +620,18 @@ void handleExperimental(void)
   httpOK(txt);
 }
 
+#include "ff.h"
+void get_sfn(char *out_sfn, File *file)
+{
+#if FF_USE_LFN
+  FILINFO info;
+  f_stat(file->path(), &info);
+  strncpy(out_sfn, info.altname, FF_SFN_BUF + 1);
+#else /* FF_USE_LFN */
+  strncpy(out_sfn, file->name().c_str(), FF_SFN_BUF + 1);
+#endif /* FF_USE_LFN */
+}
+
 /* CMD list */
 void handleList()
 {
@@ -635,16 +652,12 @@ void handleList()
     return;
   }
 
-  String parentDir;
   File root;
 
   if (path[0] != '/')
     path = "/" + path;
 
   String txt;
-
-  parentDir = String(path);
-  parentDir[strrchr(path.c_str(), '/') - path.c_str() + 1] = 0;
 
   if (mountSD() != MOUNT_OK)
   {
@@ -655,12 +668,20 @@ void handleList()
   if (fileSystem.exists((char *)path.c_str()))
   {
     root = fileSystem.open(path);
+
+    // Chunked mode
+    server.setContentLength(CONTENT_LENGTH_UNKNOWN);
+    server.send(200, "application/json", "");
+
+    char sfn[FF_SFN_BUF + 1];
     if (root.isDirectory())
     {
       int count = 0;
       txt = "[";
       while (File file = root.openNextFile())
       {
+        get_sfn(sfn, &file);
+
         if (count++)
         {
           txt += ",";
@@ -678,25 +699,38 @@ void handleList()
         }
         txt += "\"name\":\"";
         txt += file.name();
-        txt += "\",";
-        txt += "\"size\":";
+        txt += "\",\"size\":";
         txt += file.size();
-        txt += "}";
+        txt += ",\"sfn\":\"";
+        txt += sfn;
+        txt += "\"}";
+
+        if (txt.length() > 1024)
+        {
+          server.sendContent(txt);
+          txt = "";
+        }
       }
       txt += "]";
     }
     else
     {
+      get_sfn(sfn, &root);
+
       txt = "{\"item\": {\"type\":\"file\",";
       txt += "\"name\":\"";
       txt += root.name();
-      txt += "\"size\":\"";
+      txt += "\",\"size\":";
       txt += root.size();
+      txt += ",\"sfn\":\"";
+      txt += sfn;
       txt += "\"}}";
     }
+
     if (root)
       root.close();
-    server.send(200, "application/json", txt);
+
+    server.sendContent(txt);
   }
   else
   {
@@ -997,6 +1031,83 @@ void handleUploadProcessPUT()
   }
 }
 #endif
+
+void handleMkdir()
+{
+  if (!server.hasArg("path"))
+  {
+    httpInvalidRequest("MKDIR:BADARGS");
+    return;
+  }
+
+  if (mountSD() != MOUNT_OK)
+  {
+    httpServiceUnavailable("MKDIR:SDBUSY");
+    return;
+  }
+
+  String path = server.arg("path");
+
+  if (path[0] != '/')
+  {
+    path = "/" + path;
+  }
+
+  if (fileSystem.exists(path) || fileSystem.mkdir(path))
+  {
+    httpOK();
+  }
+  else
+  {
+    httpNotFound();
+  }
+
+  umountSD();
+}
+
+void handleRmdir()
+{
+  if (!server.hasArg("path"))
+  {
+    httpInvalidRequest("RMDIR:BADARGS");
+    return;
+  }
+
+  if (mountSD() != MOUNT_OK)
+  {
+    httpServiceUnavailable("RMDIR:SDBUSY");
+    return;
+  }
+
+  String path = server.arg("path");
+
+  if (path[0] != '/')
+  {
+    path = "/" + path;
+  }
+
+  /* Trying to delete root */
+  if (path.length() < 2)
+  {
+    httpInvalidRequest("RMDIR:BADARGS");
+    return;
+  }
+
+  if (!fileSystem.exists(path))
+  {
+    httpNotFound();
+    return;
+  }
+
+  if (!fileSystem.rmdir(path))
+  {
+    httpInternalError();
+    return;
+  }
+
+  httpOK();
+  umountSD();
+}
 
 void handleUploadProcess()
 {
