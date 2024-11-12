@@ -632,6 +632,13 @@ void get_sfn(char *out_sfn, File *file)
 #endif /* FF_USE_LFN */
 }
 
+struct HandleListStates {
+  File root;
+  String txt;
+  int count;
+  bool finished;
+};
+
 /* CMD list */
 void handleList(AsyncWebServerRequest *request)
 {
@@ -658,69 +665,75 @@ void handleList(AsyncWebServerRequest *request)
   if (fileSystem.exists((char *)path.c_str())) {
     File root = fileSystem.open(path);
     if (root.isDirectory()) {
-      String txt;
-      int count;
-      bool finished;
+      struct HandleListStates* states = new HandleListStates();
+      states->root = root;
+      request->_tempObject = states;
 
       AsyncWebServerResponse *response = request->beginChunkedResponse(
         "application/json",
-        [root, txt, count, finished](
+        [request, path](
             uint8_t* buffer,
             const size_t max_len,
             const size_t index) mutable -> size_t
         {
+          struct HandleListStates* states = (struct HandleListStates*) request->_tempObject;
+
           char sfn[FF_SFN_BUF + 1];
 
           log_i("index %u, %u", index, max_len);
           if (index == 0) {
-            txt = "[";
-            count = 0;
-            finished = false;
+            //if (mountSD() != MOUNT_OK) {
+            //  states->finished = true;
+            //  states->txt = "LIST:SDBUSY";
+            //  memcpy(buffer, states->txt.c_str(), states->txt.length());
+            //  return states->txt.length();
+            //}
+            //states->root = fileSystem.open(states->path);
+            states->txt = "[";
+            states->count = 0;
+            states->finished = false;
           }
 
-          while (File file = root.openNextFile()) {
-            log_i("file %s", file.name());
+          while (File file = states->root.openNextFile()) {
             get_sfn(sfn, &file);
 
-            if (count++) {
-              txt += ",";
+            if (states->count++) {
+              states->txt += ",";
             }
 
-            txt += "{\"id\":";
-            txt += count;
-            txt += ",\"type\":";
+            states->txt += "{\"id\":";
+            states->txt += states->count;
+            states->txt += ",\"type\":";
 
             if (file.isDirectory()) {
-              txt += "\"dir\",";
+              states->txt += "\"dir\",";
             } else {
-              txt += "\"file\",";
+              states->txt += "\"file\",";
             }
 
-            txt += "\"name\":\"";
-            txt += file.name();
-            txt += "\",\"size\":";
-            txt += file.size();
-            txt += ",\"sfn\":\"";
-            txt += sfn;
-            txt += "\"}";
+            states->txt += "\"name\":\"";
+            states->txt += file.name();
+            states->txt += "\",\"size\":";
+            states->txt += file.size();
+            states->txt += ",\"sfn\":\"";
+            states->txt += sfn;
+            states->txt += "\"}";
 
-            if (txt.length() > max_len) {
-              memcpy(buffer, txt.c_str(), max_len);
-              txt = txt.substring(max_len);
-              log_i("return %u", max_len);
+            if (states->txt.length() > max_len) {
+              memcpy(buffer, states->txt.c_str(), max_len);
+              states->txt = states->txt.substring(max_len);
               return max_len;
             }
           }
 
-          if (!finished) {
-            finished = true;
-            txt += "]";
-            memcpy(buffer, txt.c_str(), txt.length());
-            root.close();
-            log_i("return %u", txt.length());
-            return txt.length();
+          if (!states->finished) {
+            states->finished = true;
+            states->txt += "]";
+            memcpy(buffer, states->txt.c_str(), states->txt.length());
+            states->root.close();
+            umountSD();
+            return states->txt.length();
           } else {
-            log_i("return %u", 0);
             return 0;
           }
         });
@@ -741,12 +754,13 @@ void handleList(AsyncWebServerRequest *request)
 
       root.close();
       request->send(response);
+      umountSD();
     }
 
   } else {
     httpNotFound(request);
+    umountSD();
   }
-  umountSD();
 }
 
 /* CMD Download a file */
@@ -1120,7 +1134,7 @@ void handleUploadProcess(AsyncWebServerRequest *request, String filename, size_t
 {
   if (!index)
   {
-    if (!mountSD()) {
+    if (mountSD() != MOUNT_OK) {
       /* BUGBUG: how to return the error to the handler */
       httpServiceUnavailable(request, "UPLOAD:SDBUSY");
       return;
@@ -1142,18 +1156,18 @@ void handleUploadProcess(AsyncWebServerRequest *request, String filename, size_t
     if (path[0] != '/')
       path = "/" + path;
 
-    if (fileSystem.exists((char *)path.c_str())) {
-      fileSystem.remove((char *)path.c_str());
+    if (fileSystem.exists(path)) {
+      fileSystem.remove(path);
     }
-    request->_tempFile = fileSystem.open(path.c_str(), FILE_WRITE);
+
+    request->_tempFile = fileSystem.open(path, FILE_WRITE);
 
     if (!request->_tempFile) {
       umountSD();
       log_e("Upload: Failed to open filename: %s", path.c_str());
       httpInternalError(request, "Failed to open file");
     } else {
-      if (request->_tempFile.isDirectory())
-      {
+      if (request->_tempFile.isDirectory()) {
         request->_tempFile.close();
         umountSD();
         httpNotAllowed(request, "Path is a directory");
@@ -1172,9 +1186,9 @@ void handleUploadProcess(AsyncWebServerRequest *request, String filename, size_t
   {
     if (request->_tempFile) {
       request->_tempFile.close();
-      umountSD();
     }
     log_i("Upload: END, Size: %d", len);
+    umountSD();
   }
 }
 
