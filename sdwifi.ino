@@ -4,10 +4,13 @@
  *  Based on a simple WebServer.
  */
 
-//#define PUT_UPLOAD
+#ifdef ASYNCWEBSERVER_REGEX
+# define PUT_UPLOAD
+#endif
 
 #include <WiFi.h>
 #include <WiFiClient.h>
+
 #include <ESPAsyncWebServer.h>
 
 #include <ESPmDNS.h>
@@ -21,10 +24,6 @@
 #if __has_include(<mbedtls/compat-2.x.h>)
 #include <mbedtls/compat-2.x.h>
 #endif
-#endif
-
-#ifdef PUT_UPLOAD
-#include <uri/UriRegex.h>
 #endif
 
 static const char *default_name = "sdwifi";
@@ -51,7 +50,6 @@ enum
 AsyncWebServer server(80);
 
 Preferences prefs;
-File dataFile;
 fs::FS &fileSystem = SD_MMC;
 
 volatile struct
@@ -161,7 +159,7 @@ void setupWebServer()
   /* file ops */
   server.on("/upload", HTTP_POST, handleUpload, handleUploadProcess);
 #ifdef PUT_UPLOAD
-  server.on(UriRegex("/upload/(.*)"), HTTP_PUT, handleUpload, handleUploadProcessPUT);
+  server.on("^/upload/(.+)$", HTTP_PUT, handleUpload, nullptr, handleUploadProcessPUT);
 #endif
   server.on("/download", HTTP_GET, handleDownload);
   server.on("/sha1", handleSha1);
@@ -682,13 +680,6 @@ void handleList(AsyncWebServerRequest *request)
 
           log_i("index %u, %u", index, max_len);
           if (index == 0) {
-            //if (mountSD() != MOUNT_OK) {
-            //  states->finished = true;
-            //  states->txt = "LIST:SDBUSY";
-            //  memcpy(buffer, states->txt.c_str(), states->txt.length());
-            //  return states->txt.length();
-            //}
-            //states->root = fileSystem.open(states->path);
             states->txt = "[";
             states->count = 0;
             states->finished = false;
@@ -785,7 +776,7 @@ void handleDownload(AsyncWebServerRequest *request)
 
   if (fileSystem.exists((char *)path.c_str()))
   {
-    dataFile = fileSystem.open(path.c_str(), FILE_READ);
+    File dataFile = fileSystem.open(path.c_str(), FILE_READ);
     if (!dataFile)
     {
       httpServiceUnavailable(request, "Failed to open file");
@@ -912,7 +903,9 @@ void handleSha1(AsyncWebServerRequest *request)
   if (path[0] != '/')
     path = "/" + path;
 
-  if (!fileSystem.exists((char *)path.c_str()) || !(dataFile = fileSystem.open(path.c_str(), FILE_READ)))
+  File dataFile = fileSystem.open(path.c_str(), FILE_READ);
+
+  if (!fileSystem.exists(path) || !dataFile)
   {
     umountSD();
     httpNotFound(request);
@@ -974,81 +967,89 @@ void handleSha1(AsyncWebServerRequest *request)
 /* CMD Upload a file */
 void handleUpload(AsyncWebServerRequest *request)
 {
-  httpOK(request, "");
+  // Do not answer, otherwise we erase the one sent by handler
 }
 
 #ifdef PUT_UPLOAD
-void handleUploadProcessPUT(AsyncWebServerRequest *request)
+
+
+struct HandlePUTStates {
+  File dataFile;
+};
+
+void handleUploadProcessPUT(AsyncWebServerRequest *request, uint8_t* data, size_t len, size_t index, size_t total)
 {
-  HTTPRaw &reqState = request->raw();
-  if (&reqState == nullptr)
-  {
-    httpInvalidRequest(request, "UPLOAD:BADARGS");
-    return;
-  };
-
   String path = request->pathArg(0);
+  struct HandlePUTStates * states;
 
-  if (path == nullptr || path == "")
-  {
+  if (path == nullptr || path == "") {
+    log_i("Upload failed: BADDARGS");
     httpInvalidRequest(request, "UPLOAD:BADARGS");
-    ;
     return;
   }
 
-  if (path[0] != '/')
+  if (path[0] != '/') {
     path = "/" + path;
+  }
 
-  if (reqState.status == RAW_START)
-  {
-    if (mountSD() != MOUNT_OK)
-    {
+  if (index == 0) {
+    states = new HandlePUTStates();
+    states->dataFile = File();
+    request->_tempObject = states;
+
+    if (mountSD() != MOUNT_OK) {
+      log_i("Upload failed: SDBUSY");
       httpServiceUnavailable(request, "UPLOAD:SDBUSY");
       return;
     }
-    if (fileSystem.exists((char *)path.c_str()))
-      fileSystem.remove((char *)path.c_str()); // should fail if the path is a directory
+    if (fileSystem.exists(path)) {
+      fileSystem.remove(path); // should fail if the path is a directory
+    }
 
-    dataFile = fileSystem.open(path.c_str(), FILE_WRITE);
-    if (!dataFile)
-    {
+    File dataFile = fileSystem.open(path, FILE_WRITE);
+
+    if (!dataFile) {
+      log_i("Upload failed: File open failed");
       httpServiceUnavailable(request, "File open failed");
       umountSD();
       return;
     }
-    if (dataFile.isDirectory())
-    {
+
+    if (dataFile.isDirectory()) {
       dataFile.close();
+      log_i("Upload failed: Path is a directory");
       httpNotAllowed(request, "Path is a directory");
       umountSD();
       return;
     }
-    log_v("Upload: START, filename: %s", path.c_str());
+    log_i("Upload: START, filename: %s", path.c_str());
+    states->dataFile = dataFile;
+
+    request->onDisconnect([states, path](){
+      states->dataFile.close();
+      states->dataFile = File();
+      fileSystem.remove(path);
+      umountSD();
+      log_v("Upload PUT: file aborted");
+    });
+  } else {
+    states = (struct HandlePUTStates *) request->_tempObject;
+  }
+
+  if (!states->dataFile) {
+    log_i("Upload failed: !states->dataFile");
     return;
   }
 
-  if (!dataFile)
-    return;
-
-  switch (reqState.status)
-  {
-  case RAW_WRITE:
-    dataFile.write(reqState.buf, reqState.currentSize);
-    break;
-  case RAW_END:
-    dataFile.close();
+  states->dataFile.write(data, len);
+  log_i("Upload PUT: WRITE, length: %d", len);
+  
+  if(index + len == total) {
+    states->dataFile.close();
+    states->dataFile = File();
     umountSD();
-    log_v("Upload PUT: END, Size: %d", reqState.totalSize);
-    break;
-  case RAW_ABORTED:
-    // BUGBUG: is it safe to remove open file?
-    fileSystem.remove(dataFile.path());
-    dataFile.close();
-    umountSD();
-    log_v("Upload PUT: file aborted");
-    break;
-  default:
-    log_w("Upload PUT: raw status %d", reqState.status);
+    log_i("Upload PUT: END, Size: %d", total);
+    httpOK(request);
   }
 }
 #endif
@@ -1189,6 +1190,7 @@ void handleUploadProcess(AsyncWebServerRequest *request, String filename, size_t
     }
     log_i("Upload: END, Size: %d", len);
     umountSD();
+    httpOK(request);
   }
 }
 
