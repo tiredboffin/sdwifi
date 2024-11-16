@@ -628,9 +628,11 @@ void get_sfn(char *out_sfn, File *file)
   FILINFO info;
   f_stat(file->path(), &info);
   strncpy(out_sfn, info.altname, FF_SFN_BUF + 1);
-#else /* FF_USE_LFN */
-  strncpy(out_sfn, file->name().c_str(), FF_SFN_BUF + 1);
+  if (strlen(out_sfn) == 0)
 #endif /* FF_USE_LFN */
+  {
+    strncpy(out_sfn, file->name(), FF_SFN_BUF + 1);
+  }
 }
 
 struct HandleListStates {
@@ -663,7 +665,7 @@ void handleList(AsyncWebServerRequest *request)
     return;
   }
 
-  if (fileSystem.exists((char *)path.c_str())) {
+  if (fileSystem.exists(path)) {
     File root = fileSystem.open(path);
     if (root.isDirectory()) {
       struct HandleListStates* states = new HandleListStates();
@@ -776,9 +778,9 @@ void handleDownload(AsyncWebServerRequest *request)
     return;
   }
 
-  if (fileSystem.exists((char *)path.c_str()))
+  if (fileSystem.exists(path))
   {
-    File dataFile = fileSystem.open(path.c_str(), FILE_READ);
+    File dataFile = fileSystem.open(path, FILE_READ);
     if (!dataFile)
     {
       httpServiceUnavailable(request, "Failed to open file");
@@ -905,7 +907,7 @@ void handleSha1(AsyncWebServerRequest *request)
   if (path[0] != '/')
     path = "/" + path;
 
-  File dataFile = fileSystem.open(path.c_str(), FILE_READ);
+  File dataFile = fileSystem.open(path, FILE_READ);
 
   if (!fileSystem.exists(path) || !dataFile)
   {
@@ -1060,32 +1062,28 @@ void handleUploadProcessPUT(AsyncWebServerRequest *request, uint8_t* data, size_
 
 void handleMkdir(AsyncWebServerRequest *request)
 {
-  if (!request->hasArg("path"))
-  {
-    httpInvalidRequest(request, "MKDIR:BADARGS");
-    return;
-  }
-
-  if (mountSD() != MOUNT_OK)
-  {
-    httpServiceUnavailable(request, "MKDIR:SDBUSY");
+  if (!request->hasArg("path")) {
+    httpInvalidRequestJson(request, "{\"error\":\"MKDIR:BADARGS\"}");
     return;
   }
 
   String path = request->arg("path");
 
-  if (path[0] != '/')
-  {
+  if (path[0] != '/') {
     path = "/" + path;
   }
 
-  if (fileSystem.exists(path) || fileSystem.mkdir(path))
-  {
-    httpOK(request);
+  if (mountSD() != MOUNT_OK) {
+    httpServiceUnavailableJson(request, "{\"error\":\"MKDIR:SDBUSY\"}");
+    return;
   }
-  else
-  {
-    httpNotFound(request);
+
+  if (fileSystem.exists(path) || fileSystem.mkdir(path)) {
+    File dir = fileSystem.open(path);
+    sendFileInfoJson(request, dir);
+    dir.close();
+  } else {
+    httpNotFoundJson(request,"{\"error\":\"Failed to create directory\"}");
   }
 
   umountSD();
@@ -1212,7 +1210,8 @@ void sendFileInfoJson(AsyncWebServerRequest *request, File file) {
   get_sfn(sfn, &file);
 
   response->printf(
-    "{\"item\": {\"type\":\"file\",\"name\":\"%s\",\"size\":%u,\"sfn\":\"%s\"}}",
+    "{\"item\": {\"type\":\"%s\",\"name\":\"%s\",\"size\":%u,\"sfn\":\"%s\"}}",
+    file.isDirectory() ? "dir" : "file",
     file.name(),
     file.size(),
     sfn
