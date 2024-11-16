@@ -732,19 +732,8 @@ void handleList(AsyncWebServerRequest *request)
     }
     else
     {
-      char sfn[FF_SFN_BUF + 1];
-      get_sfn(sfn, &root);
-
-      AsyncResponseStream *response = request->beginResponseStream("application/json");
-      response->printf(
-        "{\"item\": {\"type\":\"file\",\"name\":\"%s\",\"size\":%u,\"sfn\":\"%s\"}}",
-        root.name(),
-        root.size(),
-        sfn
-      );
-
+      sendFileInfoJson(request, root);
       root.close();
-      request->send(response);
       umountSD();
     }
 
@@ -984,7 +973,7 @@ void handleUploadProcessPUT(AsyncWebServerRequest *request, uint8_t* data, size_
 
   if (path == nullptr || path == "") {
     log_i("Upload failed: BADDARGS");
-    httpInvalidRequest(request, "UPLOAD:BADARGS");
+    httpInvalidRequestJson(request, "{\"error\":\"UPLOAD:BADARGS\"}");
     return;
   }
 
@@ -999,9 +988,10 @@ void handleUploadProcessPUT(AsyncWebServerRequest *request, uint8_t* data, size_
 
     if (mountSD() != MOUNT_OK) {
       log_i("Upload failed: SDBUSY");
-      httpServiceUnavailable(request, "UPLOAD:SDBUSY");
+      httpServiceUnavailableJson(request, "{\"error\":\"UPLOAD:SDBUSY\"}");
       return;
     }
+
     if (fileSystem.exists(path)) {
       fileSystem.remove(path); // should fail if the path is a directory
     }
@@ -1010,16 +1000,16 @@ void handleUploadProcessPUT(AsyncWebServerRequest *request, uint8_t* data, size_
 
     if (!dataFile) {
       log_i("Upload failed: File open failed");
-      httpServiceUnavailable(request, "File open failed");
       umountSD();
+      httpInternalErrorJson(request, "{\"error\":\"Failed to open file\"}");
       return;
     }
 
     if (dataFile.isDirectory()) {
       dataFile.close();
       log_i("Upload failed: Path is a directory");
-      httpNotAllowed(request, "Path is a directory");
       umountSD();
+      httpNotAllowedJson(request, "{\"error\":\"Path is a directory\"}");
       return;
     }
     log_i("Upload: START, filename: %s", path.c_str());
@@ -1045,11 +1035,12 @@ void handleUploadProcessPUT(AsyncWebServerRequest *request, uint8_t* data, size_
   log_i("Upload PUT: WRITE, length: %d", len);
   
   if(index + len == total) {
+    states->dataFile.flush();
+    sendFileInfoJson(request, states->dataFile);
     states->dataFile.close();
     states->dataFile = File();
     umountSD();
     log_i("Upload PUT: END, Size: %d", total);
-    httpOK(request);
   }
 }
 #endif
@@ -1136,8 +1127,8 @@ void handleUploadProcess(AsyncWebServerRequest *request, String filename, size_t
   if (!index)
   {
     if (mountSD() != MOUNT_OK) {
-      /* BUGBUG: how to return the error to the handler */
-      httpServiceUnavailable(request, "UPLOAD:SDBUSY");
+      log_i("Upload failed: SDBUSY");
+      httpServiceUnavailableJson(request, "{\"error\":\"UPLOAD:SDBUSY\"}");
       return;
     }
 
@@ -1150,7 +1141,8 @@ void handleUploadProcess(AsyncWebServerRequest *request, String filename, size_t
     }
 
     if (path == nullptr || path == "") {
-      httpInvalidRequest(request, "UPLOAD:BADARGS");
+      log_i("Upload failed: BADDARGS");
+      httpInvalidRequestJson(request, "{\"error\":\"UPLOAD:BADARGS\"}");
       return;
     }
 
@@ -1166,32 +1158,54 @@ void handleUploadProcess(AsyncWebServerRequest *request, String filename, size_t
     if (!request->_tempFile) {
       umountSD();
       log_e("Upload: Failed to open filename: %s", path.c_str());
-      httpInternalError(request, "Failed to open file");
+      httpInternalErrorJson(request, "{\"error\":\"Failed to open file\"}");
+      return;
     } else {
       if (request->_tempFile.isDirectory()) {
         request->_tempFile.close();
+        request->_tempFile = File();
         umountSD();
-        httpNotAllowed(request, "Path is a directory");
+        log_i("Path is a directory");
+        httpNotAllowedJson(request, "{\"error\":\"Path is a directory\"}");
+        return;
       }
       log_i("Upload: START, filename: %s", path.c_str());
     }
   }
 
-  if (len)
-  {
-    if (request->_tempFile) {
-      request->_tempFile.write(data, len);
-    }
+  if (!request->_tempFile) {
+    log_i("Upload failed: !states->dataFile");
+    return;
   }
+
+  if (len) {
+    request->_tempFile.write(data, len);
+  }
+
   if (final)
   {
-    if (request->_tempFile) {
-      request->_tempFile.close();
-    }
     log_i("Upload: END, Size: %d", len);
+    request->_tempFile.flush();
+    sendFileInfoJson(request, request->_tempFile);
+    request->_tempFile.close();
+    request->_tempFile = File();
     umountSD();
-    httpOK(request);
   }
+}
+
+void sendFileInfoJson(AsyncWebServerRequest *request, File file) {
+  AsyncResponseStream *response = request->beginResponseStream("application/json");
+  char sfn[FF_SFN_BUF + 1];
+  get_sfn(sfn, &file);
+
+  response->printf(
+    "{\"item\": {\"type\":\"file\",\"name\":\"%s\",\"size\":%u,\"sfn\":\"%s\"}}",
+    file.name(),
+    file.size(),
+    sfn
+  );
+
+  request->send(response);
 }
 
 /* */
@@ -1205,6 +1219,11 @@ inline void httpOK(AsyncWebServerRequest *request, String msg)
   request->send(200, "text/plain", msg + "\r\n");
 }
 
+inline void httpOKJson(AsyncWebServerRequest *request, String msg)
+{
+  request->send(200, "application/json", msg);
+}
+
 inline void httpInvalidRequest(AsyncWebServerRequest *request)
 {
   request->send(400, "text/plain");
@@ -1213,6 +1232,11 @@ inline void httpInvalidRequest(AsyncWebServerRequest *request)
 inline void httpInvalidRequest(AsyncWebServerRequest *request, String msg)
 {
   request->send(400, "text/plain", msg + "\r\n");
+}
+
+inline void httpInvalidRequestJson(AsyncWebServerRequest *request, String msg)
+{
+  request->send(400, "application/json", msg);
 }
 
 inline void httpNotFound(AsyncWebServerRequest *request)
@@ -1225,6 +1249,11 @@ inline void httpNotFound(AsyncWebServerRequest *request, String msg)
   request->send(404, "text/plain", msg + "\r\n");
 }
 
+inline void httpNotFoundJson(AsyncWebServerRequest *request, String msg)
+{
+  request->send(404, "application/json", msg);
+}
+
 inline void httpNotAllowed(AsyncWebServerRequest *request)
 {
   request->send(405, "text/plain");
@@ -1233,6 +1262,11 @@ inline void httpNotAllowed(AsyncWebServerRequest *request)
 inline void httpNotAllowed(AsyncWebServerRequest *request, String msg)
 {
   request->send(405, "text/plain", msg + "\r\n");
+}
+
+inline void httpNotAllowedJson(AsyncWebServerRequest *request, String msg)
+{
+  request->send(405, "application/json", msg);
 }
 
 inline void httpInternalError(AsyncWebServerRequest *request)
@@ -1245,7 +1279,17 @@ inline void httpInternalError(AsyncWebServerRequest *request, String msg)
   request->send(500, "text/plain", msg + "\r\n");
 }
 
+inline void httpInternalErrorJson(AsyncWebServerRequest *request, String msg)
+{
+  request->send(500, "application/json", msg);
+}
+
 inline void httpServiceUnavailable(AsyncWebServerRequest *request, String msg)
 {
   request->send(503, "text/plain", msg + "\r\n");
+}
+
+inline void httpServiceUnavailableJson(AsyncWebServerRequest *request, String msg)
+{
+  request->send(503, "application/json", msg);
 }
