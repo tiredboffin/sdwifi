@@ -55,4 +55,6 @@ static const uint8_t DAC2 = 26;
 #define SDMMC_D1              4  // SDMMC Data1
 #define BOARD_MAX_SDMMC_FREQ SDMMC_FREQ_DEFAULT
 
+#define ASYNCWEBSERVER_REGEX
+
 #endif /* Pins_Arduino_h */
