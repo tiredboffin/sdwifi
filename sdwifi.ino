@@ -62,7 +62,7 @@ volatile struct
 } sd_state;
 
 static bool esp32_controls_sd = false;
-static bool fs_is_mounted = false;
+static int fs_is_mounted = 0;
 
 void IRAM_ATTR sd_isr(void);
 
@@ -261,8 +261,9 @@ static inline void sd_unlock(void)
 /* Mount SD card */
 static int mountSD(void)
 {
-  if (fs_is_mounted)
+  if (fs_is_mounted > 0)
   {
+    ++fs_is_mounted;
     log_e("Double mount: ignore");
     return MOUNT_OK;
   }
@@ -283,21 +284,23 @@ static int mountSD(void)
     sd_unlock();
     return MOUNT_FAILED;
   }
-  fs_is_mounted = true;
+
+  ++fs_is_mounted;
   return MOUNT_OK;
 }
 
 /* Unmount SD card */
 static void umountSD(void)
 {
-  if (!fs_is_mounted)
+  if (fs_is_mounted > 1)
   {
     log_e("Double Unmount: ignore");
+    --fs_is_mounted;
     return;
   }
   SD_MMC.end();
   sd_unlock();
-  fs_is_mounted = false;
+  --fs_is_mounted;
   log_i("In SD Card Unmount");
 }
 
@@ -666,6 +669,16 @@ void handleList(AsyncWebServerRequest *request)
       struct HandleListStates* states = new HandleListStates();
       states->root = root;
       request->_tempObject = states;
+
+      request->onDisconnect([request](){
+        struct HandleListStates* states = (struct HandleListStates*) request->_tempObject;
+        if (states && states->root) {
+          states->root.close();
+          states->root = File();
+        }
+        umountSD();
+        log_v("LIST aborted");
+      });
 
       AsyncWebServerResponse *response = request->beginChunkedResponse(
         "application/json",
