@@ -4,6 +4,8 @@
  *  Based on a simple WebServer.
  */
 
+#define USE_NTP
+
 #ifdef ASYNCWEBSERVER_REGEX
 # define PUT_UPLOAD
 #endif
@@ -19,12 +21,24 @@
 #include <mbedtls/sha1.h>
 #include <esp_mac.h>
 #include <SPIFFS.h>
+#include <time.h>
 
 #if defined __has_include
-#if __has_include(<mbedtls/compat-2.x.h>)
-#include <mbedtls/compat-2.x.h>
+# if __has_include(<mbedtls/compat-2.x.h>)
+#  include <mbedtls/compat-2.x.h>
+# endif
 #endif
-#endif
+
+#ifdef USE_NTP
+# ifdef CONFIG_LWIP_TCPIP_CORE_LOCKING
+#  include "lwip/tcpip.h" // for UN/LOCK_TCPIP_CORE()
+# endif /* CONFIG_LWIP_TCPIP_CORE_LOCKING */
+
+static const char* ntpServer = "pool.ntp.org";
+static const long  gmtOffset_sec = 0;
+static const int   daylightOffset_sec = 3600;
+
+#endif /* USE_NTP */
 
 static const char *default_name = "sdwifi";
 
@@ -81,6 +95,21 @@ void setup(void)
   SPIFFS.begin();
   setupWebServer();
   server.begin();
+
+#ifdef USE_NTP
+  // To use NTP, we have to lock ourselves the TCP core while operating
+  // https://github.com/espressif/arduino-esp32/issues/10526#issuecomment-2439483380
+# ifdef CONFIG_LWIP_TCPIP_CORE_LOCKING
+  if (!sys_thread_tcpip(LWIP_CORE_LOCK_QUERY_HOLDER))
+      LOCK_TCPIP_CORE();
+# endif /* CONFIG_LWIP_TCPIP_CORE_LOCKING */
+  // Send an NTP request to configure local time
+  configTime(gmtOffset_sec, daylightOffset_sec, ntpServer);
+# ifdef CONFIG_LWIP_TCPIP_CORE_LOCKING
+  if (sys_thread_tcpip(LWIP_CORE_LOCK_QUERY_HOLDER))
+      UNLOCK_TCPIP_CORE();
+# endif /* CONFIG_LWIP_TCPIP_CORE_LOCKING */
+#endif /* USE_NTP */
 }
 
 void IRAM_ATTR sd_isr(void)
@@ -723,7 +752,9 @@ void handleList(AsyncWebServerRequest *request)
             states->txt += file.size();
             states->txt += ",\"sfn\":\"";
             states->txt += sfn;
-            states->txt += "\"}";
+            states->txt += "\",\"last\":";
+            states->txt += file.getLastWrite();
+            states->txt += "}";
 
             if (states->txt.length() > max_len) {
               memcpy(buffer, states->txt.c_str(), max_len);
@@ -1210,11 +1241,12 @@ void sendFileInfoJson(AsyncWebServerRequest *request, File file) {
   get_sfn(sfn, &file);
 
   response->printf(
-    "{\"item\": {\"type\":\"%s\",\"name\":\"%s\",\"size\":%u,\"sfn\":\"%s\"}}",
+    "{\"item\": {\"type\":\"%s\",\"name\":\"%s\",\"size\":%u,\"sfn\":\"%s\",\"last\":%u}}",
     file.isDirectory() ? "dir" : "file",
     file.name(),
     file.size(),
-    sfn
+    sfn,
+    file.getLastWrite()
   );
 
   request->send(response);
