@@ -7,7 +7,7 @@ printf -v start '%(%s)T'
 TEST_TIME=3600
 while [ $elapsed -lt $TEST_TIME ];
 do
-    rc=`curl $CURL_OPTIONS http://sdwifi.local/sysinfo`
+    rc=`curl $CURL_OPTIONS http://sdwifi.local/sysinfo?sd=true`
 #   rc=`curl $CURL_OPTIONS http://sdwifi.local/list?path=/`
 #   rc=`curl $CURL_OPTIONS http://sdwifi.local/ping`
     if [[ ! "$rc" == "200" ]];
