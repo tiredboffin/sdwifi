@@ -4,11 +4,16 @@
  *  Based on a simple WebServer.
  */
 
-#define PUT_UPLOAD
+#define USE_NTP
+
+#ifdef ASYNCWEBSERVER_REGEX
+# define PUT_UPLOAD
+#endif
 
 #include <WiFi.h>
 #include <WiFiClient.h>
-#include <WebServer.h>
+
+#include <ESPAsyncWebServer.h>
 
 #include <ESPmDNS.h>
 #include <SD_MMC.h>
@@ -16,16 +21,24 @@
 #include <mbedtls/sha1.h>
 #include <esp_mac.h>
 #include <SPIFFS.h>
+#include <time.h>
 
 #if defined __has_include
-#if __has_include(<mbedtls/compat-2.x.h>)
-#include <mbedtls/compat-2.x.h>
-#endif
+# if __has_include(<mbedtls/compat-2.x.h>)
+#  include <mbedtls/compat-2.x.h>
+# endif
 #endif
 
-#ifdef PUT_UPLOAD
-#include <uri/UriRegex.h>
-#endif
+#ifdef USE_NTP
+# ifdef CONFIG_LWIP_TCPIP_CORE_LOCKING
+#  include "lwip/tcpip.h" // for UN/LOCK_TCPIP_CORE()
+# endif /* CONFIG_LWIP_TCPIP_CORE_LOCKING */
+
+static const char* ntpServer = "pool.ntp.org";
+static const long  gmtOffset_sec = 0;
+static const int   daylightOffset_sec = 3600;
+
+#endif /* USE_NTP */
 
 static const char *default_name = "sdwifi";
 
@@ -48,10 +61,9 @@ enum
   MOUNT_FAILED
 };
 
-WebServer server(80);
+AsyncWebServer server(80);
 
 Preferences prefs;
-File dataFile;
 fs::FS &fileSystem = SD_MMC;
 
 volatile struct
@@ -64,7 +76,7 @@ volatile struct
 } sd_state;
 
 static bool esp32_controls_sd = false;
-static bool fs_is_mounted = false;
+static int fs_is_mounted = 0;
 
 void IRAM_ATTR sd_isr(void);
 
@@ -83,6 +95,21 @@ void setup(void)
   SPIFFS.begin();
   setupWebServer();
   server.begin();
+
+#ifdef USE_NTP
+  // To use NTP, we have to lock ourselves the TCP core while operating
+  // https://github.com/espressif/arduino-esp32/issues/10526#issuecomment-2439483380
+# ifdef CONFIG_LWIP_TCPIP_CORE_LOCKING
+  if (!sys_thread_tcpip(LWIP_CORE_LOCK_QUERY_HOLDER))
+      LOCK_TCPIP_CORE();
+# endif /* CONFIG_LWIP_TCPIP_CORE_LOCKING */
+  // Send an NTP request to configure local time
+  configTime(gmtOffset_sec, daylightOffset_sec, ntpServer);
+# ifdef CONFIG_LWIP_TCPIP_CORE_LOCKING
+  if (sys_thread_tcpip(LWIP_CORE_LOCK_QUERY_HOLDER))
+      UNLOCK_TCPIP_CORE();
+# endif /* CONFIG_LWIP_TCPIP_CORE_LOCKING */
+#endif /* USE_NTP */
 }
 
 void IRAM_ATTR sd_isr(void)
@@ -122,12 +149,7 @@ void monitor_sd(void)
 
 void loop(void)
 {
-
   monitor_sd();
-
-  /* handle one client at a time */
-  server.handleClient();
-  delay(2);
 }
 
 void setupWiFi()
@@ -152,17 +174,21 @@ void setupWiFi()
 }
 void setupWebServer()
 {
-  server.enableCORS();
+  DefaultHeaders::Instance().addHeader("Access-Control-Allow-Origin", "*");
+  DefaultHeaders::Instance().addHeader("Access-Control-Allow-Methods", "GET, POST, PUT");
+  DefaultHeaders::Instance().addHeader("Access-Control-Allow-Headers", "Content-Type");
+
   /* TODO: rethink the API to simplify scripting  */
-  server.on("/ping", []()
-            { httpOK(); });
+  server.on("/ping", [](AsyncWebServerRequest *request) {
+    httpOK(request);
+  });
   server.on("/sysinfo", handleInfo);
   server.on("/config", handleConfig);
   server.on("/exp", handleExperimental);
   /* file ops */
   server.on("/upload", HTTP_POST, handleUpload, handleUploadProcess);
 #ifdef PUT_UPLOAD
-  server.on(UriRegex("/upload/(.*)"), HTTP_PUT, handleUpload, handleUploadProcessPUT);
+  server.on("^/upload/(.+)$", HTTP_PUT, handleUpload, nullptr, handleUploadProcessPUT);
 #endif
   server.on("/download", HTTP_GET, handleDownload);
   server.on("/sha1", handleSha1);
@@ -173,18 +199,19 @@ void setupWebServer()
   server.on("/rmdir", handleRmdir);
 
   /* Testing: For compatibility with original Fysetc web app code */
-  server.on("/relinquish", HTTP_GET, []()
-            { httpOK(); });
+  server.on("/relinquish", HTTP_GET, [](AsyncWebServerRequest *request) {
+    httpOK(request);
+  });
   server.on("/wificonnect", HTTP_POST, handleWiFiConnect);
   server.on("/wifiap", HTTP_POST, handleWiFiAP);
   server.on("/delete", handleRemove);
 
   /* Static content */
   server.serveStatic("/", SPIFFS, "/");
-  server.onNotFound([]() {
-    switch(server.method()) {
-      case HTTP_OPTIONS: httpOK(); break;
-      default: httpNotFound(); break;
+  server.onNotFound([](AsyncWebServerRequest *request) {
+    switch(request->method()) {
+      case HTTP_OPTIONS: httpOK(request); break;
+      default: httpNotFound(request); break;
     }
   });
 
@@ -263,8 +290,9 @@ static inline void sd_unlock(void)
 /* Mount SD card */
 static int mountSD(void)
 {
-  if (fs_is_mounted)
+  if (fs_is_mounted > 0)
   {
+    ++fs_is_mounted;
     log_e("Double mount: ignore");
     return MOUNT_OK;
   }
@@ -285,21 +313,23 @@ static int mountSD(void)
     sd_unlock();
     return MOUNT_FAILED;
   }
-  fs_is_mounted = true;
+
+  ++fs_is_mounted;
   return MOUNT_OK;
 }
 
 /* Unmount SD card */
 static void umountSD(void)
 {
-  if (!fs_is_mounted)
+  if (fs_is_mounted > 1)
   {
     log_e("Double Unmount: ignore");
+    --fs_is_mounted;
     return;
   }
   SD_MMC.end();
   sd_unlock();
-  fs_is_mounted = false;
+  --fs_is_mounted;
   log_i("In SD Card Unmount");
 }
 
@@ -333,7 +363,7 @@ static String getInterfaceMacAddress(esp_mac_type_t interface)
 }
 
 /* CMD: Return some info */
-void handleInfo(void)
+void handleInfo(AsyncWebServerRequest *request)
 {
   String txt;
 
@@ -416,16 +446,16 @@ void handleInfo(void)
   txt += getInterfaceMacAddress(ESP_MAC_BT);
   txt += "\"}}}}";
 
-  server.send(200, "application/json", txt);
+  request->send(200, "application/json", txt);
 }
 
 /* CMD: Update configuration parameters */
-void handleConfig(void)
+void handleConfig(AsyncWebServerRequest *request)
 {
 
   String txt;
 
-  if (server.args() == 0)
+  if (request->args() == 0)
   {
     txt = "Configuration parameters:\n\n";
     for (int i = 0; i < sizeof(cfgparams) / sizeof(cfgparams[0]); i++)
@@ -433,14 +463,14 @@ void handleConfig(void)
       txt += cfgparams[i];
       txt += "\n";
     }
-    httpOK(txt);
+    httpOK(request, txt);
   }
 
   prefs.begin(PREF_NS, PREF_RW_MODE);
-  for (int i = 0; i < server.args(); i++)
+  for (int i = 0; i < request->args(); i++)
   {
-    String n = server.argName(i);
-    String v = server.arg(i);
+    String n = request->argName(i);
+    String v = request->arg(i);
     if (cfgparamVerify(n.c_str()))
     {
       prefs.putString(n.c_str(), v.c_str());
@@ -460,20 +490,20 @@ void handleConfig(void)
     }
   }
   prefs.end();
-  httpOK(txt);
+  httpOK(request, txt);
 }
 
 /* CMD: wificonnect: compatibility with original Fysetc web app */
-void handleWiFiConnect(void)
+void handleWiFiConnect(AsyncWebServerRequest *request)
 {
 
   String txt;
 
   prefs.begin(PREF_NS, PREF_RW_MODE);
-  for (int i = 0; i < server.args(); i++)
+  for (int i = 0; i < request->args(); i++)
   {
-    String n = "sta_" + server.argName(i);
-    String v = server.arg(i);
+    String n = "sta_" + request->argName(i);
+    String v = request->arg(i);
     if (cfgparamVerify(n.c_str()))
     {
       prefs.putString(n.c_str(), v.c_str());
@@ -493,31 +523,31 @@ void handleWiFiConnect(void)
     }
   }
   prefs.end();
-  httpOK();
+  httpOK(request);
   delay(50);
   ESP.restart();
 }
 
 /* CMD: wificonnect: compatibility with original Fysetc web app */
-void handleWiFiAP(void)
+void handleWiFiAP(AsyncWebServerRequest *request)
 {
   prefs.begin(PREF_NS, PREF_RW_MODE);
   prefs.remove("sta_ssid");
   prefs.remove("sta_password");
   prefs.end();
-  httpOK();
+  httpOK(request);
   delay(50);
   ESP.restart();
 }
 
-void handleExperimental(void)
+void handleExperimental(AsyncWebServerRequest *request)
 {
   String txt;
 
-  for (int i = 0; i < server.args(); i++)
+  for (int i = 0; i < request->args(); i++)
   {
-    String n = server.argName(i);
-    String v = server.arg(i);
+    String n = request->argName(i);
+    String v = request->arg(i);
     txt += n + "=" + v;
     /* enforce IO26 pin value */
     if (n == "io26")
@@ -568,13 +598,13 @@ void handleExperimental(void)
     {
       if (v == "restart" || v == "reboot" || v == "reset")
       {
-        httpOK(txt);
+        httpOK(request, txt);
         delay(50);
         ESP.restart();
       }
       else if (v == "off" || v == "shutdown")
       {
-        httpOK(txt);
+        httpOK(request, txt);
         delay(10);
         ESP.deepSleep(-1);
         /* never get here */
@@ -591,7 +621,7 @@ void handleExperimental(void)
       long i = v.toInt();
       if (i > 0)
       {
-        httpOK(txt);
+        httpOK(request, txt);
         log_i("deep sleep %ld ms", i);
         delay(10);
         ESP.deepSleep(i * 1000);
@@ -617,7 +647,7 @@ void handleExperimental(void)
       txt += " Ignored";
     }
   }
-  httpOK(txt);
+  httpOK(request, txt);
 }
 
 #include "ff.h"
@@ -627,201 +657,218 @@ void get_sfn(char *out_sfn, File *file)
   FILINFO info;
   f_stat(file->path(), &info);
   strncpy(out_sfn, info.altname, FF_SFN_BUF + 1);
-#else /* FF_USE_LFN */
-  strncpy(out_sfn, file->name().c_str(), FF_SFN_BUF + 1);
+  if (strlen(out_sfn) == 0)
 #endif /* FF_USE_LFN */
+  {
+    strncpy(out_sfn, file->name(), FF_SFN_BUF + 1);
+  }
 }
 
-/* CMD list */
-void handleList()
-{
+struct HandleListStates {
+  File root;
+  String txt;
+  int count;
+  bool finished;
+};
 
+/* CMD list */
+void handleList(AsyncWebServerRequest *request)
+{
   String path;
 
-  if (server.hasArg("path"))
-  {
-    path = server.arg("path");
-  }
-  else if (server.hasArg("dir"))
-  {
-    path = server.arg("dir");
-  }
-  else
-  {
-    httpInvalidRequest("LIST:BADARGS");
+  if (request->hasArg("path")) {
+    path = request->arg("path");
+  } else if (request->hasArg("dir")) {
+    path = request->arg("dir");
+  } else {
+    httpInvalidRequest(request, "LIST:BADARGS");
     return;
   }
 
-  File root;
-
-  if (path[0] != '/')
+  if (path[0] != '/') {
     path = "/" + path;
+  }
 
-  String txt;
-
-  if (mountSD() != MOUNT_OK)
-  {
-    httpServiceUnavailable("LIST:SDBUSY");
+  if (mountSD() != MOUNT_OK) {
+    httpServiceUnavailable(request, "LIST:SDBUSY");
     return;
   }
 
-  if (fileSystem.exists((char *)path.c_str()))
-  {
-    root = fileSystem.open(path);
+  if (fileSystem.exists(path)) {
+    File root = fileSystem.open(path);
+    if (root.isDirectory()) {
+      struct HandleListStates* states = new HandleListStates();
+      states->root = root;
+      request->_tempObject = states;
 
-    // Chunked mode
-    server.setContentLength(CONTENT_LENGTH_UNKNOWN);
-    server.send(200, "application/json", "");
+      request->onDisconnect([request](){
+        struct HandleListStates* states = (struct HandleListStates*) request->_tempObject;
+        if (states && states->root) {
+          states->root.close();
+          states->root = File();
+        }
+        umountSD();
+        log_v("LIST aborted");
+      });
 
-    char sfn[FF_SFN_BUF + 1];
-    if (root.isDirectory())
-    {
-      int count = 0;
-      txt = "[";
-      while (File file = root.openNextFile())
-      {
-        get_sfn(sfn, &file);
+      AsyncWebServerResponse *response = request->beginChunkedResponse(
+        "application/json",
+        [request, path](
+            uint8_t* buffer,
+            const size_t max_len,
+            const size_t index) mutable -> size_t
+        {
+          struct HandleListStates* states = (struct HandleListStates*) request->_tempObject;
 
-        if (count++)
-        {
-          txt += ",";
-        }
-        txt += "{\"id\":";
-        txt += count;
-        txt += ",\"type\":";
-        if (file.isDirectory())
-        {
-          txt += "\"dir\",";
-        }
-        else
-        {
-          txt += "\"file\",";
-        }
-        txt += "\"name\":\"";
-        txt += file.name();
-        txt += "\",\"size\":";
-        txt += file.size();
-        txt += ",\"sfn\":\"";
-        txt += sfn;
-        txt += "\"}";
+          char sfn[FF_SFN_BUF + 1];
 
-        if (txt.length() > 1024)
-        {
-          server.sendContent(txt);
-          txt = "";
-        }
-      }
-      txt += "]";
+          log_i("index %u, %u", index, max_len);
+          if (index == 0) {
+            states->txt = "[";
+            states->count = 0;
+            states->finished = false;
+          }
+
+          while (File file = states->root.openNextFile()) {
+            get_sfn(sfn, &file);
+
+            if (states->count++) {
+              states->txt += ",";
+            }
+
+            states->txt += "{\"id\":";
+            states->txt += states->count;
+            states->txt += ",\"type\":";
+
+            if (file.isDirectory()) {
+              states->txt += "\"dir\",";
+            } else {
+              states->txt += "\"file\",";
+            }
+
+            states->txt += "\"name\":\"";
+            states->txt += file.name();
+            states->txt += "\",\"size\":";
+            states->txt += file.size();
+            states->txt += ",\"sfn\":\"";
+            states->txt += sfn;
+            states->txt += "\",\"last\":";
+            states->txt += file.getLastWrite();
+            states->txt += "}";
+
+            if (states->txt.length() > max_len) {
+              memcpy(buffer, states->txt.c_str(), max_len);
+              states->txt = states->txt.substring(max_len);
+              return max_len;
+            }
+          }
+
+          if (!states->finished) {
+            states->finished = true;
+            states->txt += "]";
+            memcpy(buffer, states->txt.c_str(), states->txt.length());
+            states->root.close();
+            umountSD();
+            return states->txt.length();
+          } else {
+            return 0;
+          }
+        });
+        request->send(response);
     }
     else
     {
-      get_sfn(sfn, &root);
-
-      txt = "{\"item\": {\"type\":\"file\",";
-      txt += "\"name\":\"";
-      txt += root.name();
-      txt += "\",\"size\":";
-      txt += root.size();
-      txt += ",\"sfn\":\"";
-      txt += sfn;
-      txt += "\"}}";
+      sendFileInfoJson(request, root);
+      root.close();
+      umountSD();
     }
 
-    if (root)
-      root.close();
-
-    server.sendContent(txt);
+  } else {
+    httpNotFound(request);
+    umountSD();
   }
-  else
-  {
-    httpNotFound();
-  }
-  umountSD();
 }
 
 /* CMD Download a file */
-void handleDownload(void)
+void handleDownload(AsyncWebServerRequest *request)
 {
 
-  if (!server.hasArg("path"))
+  if (!request->hasArg("path"))
   {
-    httpInvalidRequest("DOWNLOAD:BADARGS");
+    httpInvalidRequest(request, "DOWNLOAD:BADARGS");
     return;
   }
-  String path = server.arg("path");
+  String path = request->arg("path");
 
   if (path[0] != '/')
     path = "/" + path;
 
   if (mountSD() != MOUNT_OK)
   {
-    httpServiceUnavailable("DOWNLOAD:SDBUSY");
+    httpServiceUnavailable(request, "DOWNLOAD:SDBUSY");
     return;
   }
 
-  if (fileSystem.exists((char *)path.c_str()))
+  if (fileSystem.exists(path))
   {
-    dataFile = fileSystem.open(path.c_str(), FILE_READ);
+    File dataFile = fileSystem.open(path, FILE_READ);
     if (!dataFile)
     {
-      httpServiceUnavailable("Failed to open file");
+      httpServiceUnavailable(request, "Failed to open file");
     }
     else if (dataFile.isDirectory())
     {
       dataFile.close();
-      httpNotAllowed("Path is a directory");
+      httpNotAllowed(request, "Path is a directory");
     }
     else
     {
-      server.sendHeader("Content-Disposition", "attachment; filename=\"" + String(dataFile.name()) + "\"");
-      unsigned long sentSize = server.streamFile(dataFile, "application/octet-stream");
-      if (sentSize != dataFile.size())
-        log_e("Sent less data %ul than expected %ul", sentSize, dataFile.size());
       dataFile.close();
-      httpOK("Sent less data than expected");
+      AsyncWebServerResponse *response = request->beginResponse(fileSystem, path, "application/octet-stream");
+      request->send(response);
     }
   }
   else
   {
-    httpNotFound("DOWNLOAD:FileNotFound");
+    httpNotFound(request, "DOWNLOAD:FileNotFound");
   }
   umountSD();
 }
 
 /* CMD Rename a file */
-void handleRename()
+void handleRename(AsyncWebServerRequest *request)
 {
   String nameFrom;
   String nameTo = "/";
 
-  for (int i = 0; i < server.args(); i++)
+  for (int i = 0; i < request->args(); i++)
   {
-    String n = server.argName(i);
-    String v = server.arg(i);
+    String n = request->argName(i);
+    String v = request->arg(i);
     if (n == "from")
       nameFrom = "/" + v;
     else if (n == "to")
       nameTo = "/" + v;
     else
     {
-      httpInvalidRequest("RENAME:BADARGS");
+      httpInvalidRequest(request, "RENAME:BADARGS");
       return;
     }
   }
   if (!nameFrom || !nameTo)
   {
-    httpInvalidRequest("Both 'to' and 'from' has to be specified in 'rename' command");
+    httpInvalidRequest(request, "Both 'to' and 'from' has to be specified in 'rename' command");
     return;
   }
   if (nameFrom == nameTo)
   {
-    httpInvalidRequest("'to' must not be equal to 'from'");
+    httpInvalidRequest(request, "'to' must not be equal to 'from'");
     return;
   }
 
   if (mountSD() != MOUNT_OK)
   {
-    httpServiceUnavailable("RENAME:SDBUSY");
+    httpServiceUnavailable(request, "RENAME:SDBUSY");
     return;
   }
   if (fileSystem.exists((char *)nameFrom.c_str()))
@@ -831,31 +878,31 @@ void handleRename()
       fileSystem.remove(nameTo.c_str());
     }
     if (fileSystem.rename(nameFrom.c_str(), nameTo.c_str()))
-      httpOK("OK");
+      httpOK(request, "OK");
     else
-      httpServiceUnavailable("Failed to rename");
+      httpServiceUnavailable(request, "Failed to rename");
   }
   else
-    httpNotFound(nameFrom + " not found");
+    httpNotFound(request, nameFrom + " not found");
   umountSD();
 }
 
 /* CMD Remove a file */
-void handleRemove()
+void handleRemove(AsyncWebServerRequest *request)
 {
-  if (!server.hasArg("path"))
+  if (!request->hasArg("path"))
   {
-    httpInvalidRequest("DELETE:BADARGS");
+    httpInvalidRequest(request, "DELETE:BADARGS");
     return;
   }
 
   if (mountSD() != MOUNT_OK)
   {
-    httpServiceUnavailable("DELETE:SDBUSY");
+    httpServiceUnavailable(request, "DELETE:SDBUSY");
     return;
   }
 
-  String path = server.arg("path");
+  String path = request->arg("path");
 
   if (path[0] != '/')
     path = "/" + path;
@@ -863,45 +910,47 @@ void handleRemove()
   if (fileSystem.exists((char *)path.c_str()))
   {
     fileSystem.remove(path.c_str());
-    httpOK();
+    httpOK(request);
   }
   else
-    httpNotFound();
+    httpNotFound(request);
 
   umountSD();
 }
 
 /* CMD Return SHA1 of a file */
-void handleSha1()
+void handleSha1(AsyncWebServerRequest *request)
 {
 
-  if (!server.hasArg("path"))
+  if (!request->hasArg("path"))
   {
-    httpInvalidRequest("SHA1:BADARGS");
+    httpInvalidRequest(request, "SHA1:BADARGS");
     return;
   }
 
   if (mountSD() != MOUNT_OK)
   {
-    httpServiceUnavailable("SHA1:SDBUSY");
+    httpServiceUnavailable(request, "SHA1:SDBUSY");
     return;
   }
 
-  String path = server.arg("path");
+  String path = request->arg("path");
   if (path[0] != '/')
     path = "/" + path;
 
-  if (!fileSystem.exists((char *)path.c_str()) || !(dataFile = fileSystem.open(path.c_str(), FILE_READ)))
+  File dataFile = fileSystem.open(path, FILE_READ);
+
+  if (!fileSystem.exists(path) || !dataFile)
   {
     umountSD();
-    httpNotFound();
+    httpNotFound(request);
     return;
   };
   if (dataFile.isDirectory())
   {
     dataFile.close();
     umountSD();
-    httpNotAllowed();
+    httpNotAllowed(request);
     return;
   }
   size_t fileSize = dataFile.size();
@@ -946,140 +995,146 @@ void handleSha1()
     }
   }
   result += "\"}";
-  server.send(200, "application/json", result);
+  request->send(200, "application/json", result);
   return;
 }
 
 /* CMD Upload a file */
-void handleUpload()
+void handleUpload(AsyncWebServerRequest *request)
 {
-  httpOK("");
+  // Do not answer, otherwise we erase the one sent by handler
 }
 
 #ifdef PUT_UPLOAD
-void handleUploadProcessPUT()
+
+
+struct HandlePUTStates {
+  File dataFile;
+};
+
+void handleUploadProcessPUT(AsyncWebServerRequest *request, uint8_t* data, size_t len, size_t index, size_t total)
 {
-  HTTPRaw &reqState = server.raw();
-  if (&reqState == nullptr)
-  {
-    httpInvalidRequest("UPLOAD:BADARGS");
-    return;
-  };
+  String path = request->pathArg(0);
+  struct HandlePUTStates * states;
 
-  String path = server.pathArg(0);
-
-  if (path == nullptr || path == "")
-  {
-    httpInvalidRequest("UPLOAD:BADARGS");
-    ;
+  if (path == nullptr || path == "") {
+    log_i("Upload failed: BADDARGS");
+    httpInvalidRequestJson(request, "{\"error\":\"UPLOAD:BADARGS\"}");
     return;
   }
 
-  if (path[0] != '/')
+  if (path[0] != '/') {
     path = "/" + path;
+  }
 
-  if (reqState.status == RAW_START)
-  {
-    if (mountSD() != MOUNT_OK)
-    {
-      httpServiceUnavailable("UPLOAD:SDBUSY");
+  if (index == 0) {
+    states = new HandlePUTStates();
+    states->dataFile = File();
+    request->_tempObject = states;
+
+    if (mountSD() != MOUNT_OK) {
+      log_i("Upload failed: SDBUSY");
+      httpServiceUnavailableJson(request, "{\"error\":\"UPLOAD:SDBUSY\"}");
       return;
     }
-    if (fileSystem.exists((char *)path.c_str()))
-      fileSystem.remove((char *)path.c_str()); // should fail if the path is a directory
 
-    dataFile = fileSystem.open(path.c_str(), FILE_WRITE);
-    if (!dataFile)
-    {
-      httpServiceUnavailable("File open failed");
+    if (fileSystem.exists(path)) {
+      fileSystem.remove(path); // should fail if the path is a directory
+    }
+
+    File dataFile = fileSystem.open(path, FILE_WRITE);
+
+    if (!dataFile) {
+      log_i("Upload failed: File open failed");
       umountSD();
+      httpInternalErrorJson(request, "{\"error\":\"Failed to open file\"}");
       return;
     }
-    if (dataFile.isDirectory())
-    {
+
+    if (dataFile.isDirectory()) {
       dataFile.close();
-      httpNotAllowed("Path is a directory");
+      log_i("Upload failed: Path is a directory");
       umountSD();
+      httpNotAllowedJson(request, "{\"error\":\"Path is a directory\"}");
       return;
     }
-    log_v("Upload: START, filename: %s", path.c_str());
+    log_i("Upload: START, filename: %s", path.c_str());
+    states->dataFile = dataFile;
+
+    request->onDisconnect([states, path](){
+      states->dataFile.close();
+      states->dataFile = File();
+      fileSystem.remove(path);
+      umountSD();
+      log_v("Upload PUT: file aborted");
+    });
+  } else {
+    states = (struct HandlePUTStates *) request->_tempObject;
+  }
+
+  if (!states->dataFile) {
+    log_i("Upload failed: !states->dataFile");
     return;
   }
 
-  if (!dataFile)
-    return;
-
-  switch (reqState.status)
-  {
-  case RAW_WRITE:
-    dataFile.write(reqState.buf, reqState.currentSize);
-    break;
-  case RAW_END:
-    dataFile.close();
+  states->dataFile.write(data, len);
+  log_i("Upload PUT: WRITE, length: %d", len);
+  
+  if(index + len == total) {
+    states->dataFile.flush();
+    sendFileInfoJson(request, states->dataFile);
+    states->dataFile.close();
+    states->dataFile = File();
     umountSD();
-    log_v("Upload PUT: END, Size: %d", reqState.totalSize);
-    break;
-  case RAW_ABORTED:
-    // BUGBUG: is it safe to remove open file?
-    fileSystem.remove(dataFile.path());
-    dataFile.close();
-    umountSD();
-    log_v("Upload PUT: file aborted");
-    break;
-  default:
-    log_w("Upload PUT: raw status %d", reqState.status);
+    log_i("Upload PUT: END, Size: %d", total);
   }
 }
 #endif
 
-void handleMkdir()
+void handleMkdir(AsyncWebServerRequest *request)
 {
-  if (!server.hasArg("path"))
-  {
-    httpInvalidRequest("MKDIR:BADARGS");
+  if (!request->hasArg("path")) {
+    httpInvalidRequestJson(request, "{\"error\":\"MKDIR:BADARGS\"}");
     return;
   }
 
-  if (mountSD() != MOUNT_OK)
-  {
-    httpServiceUnavailable("MKDIR:SDBUSY");
-    return;
-  }
+  String path = request->arg("path");
 
-  String path = server.arg("path");
-
-  if (path[0] != '/')
-  {
+  if (path[0] != '/') {
     path = "/" + path;
   }
 
-  if (fileSystem.exists(path) || fileSystem.mkdir(path))
-  {
-    httpOK();
+  if (mountSD() != MOUNT_OK) {
+    httpServiceUnavailableJson(request, "{\"error\":\"MKDIR:SDBUSY\"}");
+    return;
   }
-  else
-  {
-    httpNotFound();
+
+  if (fileSystem.exists(path) || fileSystem.mkdir(path)) {
+    File dir = fileSystem.open(path);
+    sendFileInfoJson(request, dir);
+    dir.close();
+  } else {
+    httpNotFoundJson(request,"{\"error\":\"Failed to create directory\"}");
   }
 
   umountSD();
 }
 
-void handleRmdir()
+void handleRmdir(AsyncWebServerRequest *request)
 {
-  if (!server.hasArg("path"))
+  if (!request->hasArg("path"))
   {
-    httpInvalidRequest("RMDIR:BADARGS");
+    httpInvalidRequest(request, "RMDIR:BADARGS");
     return;
   }
 
   if (mountSD() != MOUNT_OK)
   {
-    httpServiceUnavailable("RMDIR:SDBUSY");
+    httpServiceUnavailable(request, "RMDIR:SDBUSY");
     return;
   }
 
-  String path = server.arg("path");
+  String path = request->arg("path");
 
   if (path[0] != '/')
   {
@@ -1089,153 +1144,196 @@ void handleRmdir()
   /* Trying to delete root */
   if (path.length() < 2)
   {
-    httpInvalidRequest("RMDIR:BADARGS");
+    httpInvalidRequest(request, "RMDIR:BADARGS");
     return;
   }
 
   if (!fileSystem.exists(path))
   {
-    httpNotFound();
+    httpNotFound(request);
     return;
   }
 
   if (!fileSystem.rmdir(path))
   {
-    httpInternalError();
+    httpInternalError(request);
     return;
   }
 
-  httpOK();
+  httpOK(request);
   umountSD();
 }
 
-void handleUploadProcess()
+void handleUploadProcess(AsyncWebServerRequest *request, String filename, size_t index, uint8_t *data, size_t len, bool final)
 {
-
-  HTTPUpload &reqState = server.upload();
-  if (&reqState == nullptr)
+  if (!index)
   {
-    httpInvalidRequest("UPLOAD:BADARGS");
-    return;
-  };
-
-  String path = (server.hasArg("path")) ? server.arg("path") : reqState.filename;
-
-  if (path == nullptr || path == "")
-  {
-    httpInvalidRequest("UPLOAD:BADARGS");
-    return;
-  }
-
-  if (path[0] != '/')
-    path = "/" + path;
-
-  if (reqState.status == UPLOAD_FILE_START)
-  {
-    if (mountSD() != MOUNT_OK)
-    {
-
-      httpServiceUnavailable("UPLOAD:SDBUSY");
+    if (mountSD() != MOUNT_OK) {
+      log_i("Upload failed: SDBUSY");
+      httpServiceUnavailableJson(request, "{\"error\":\"UPLOAD:SDBUSY\"}");
       return;
     }
-    if (fileSystem.exists((char *)path.c_str()))
-      fileSystem.remove((char *)path.c_str()); // should fail if the path is a directory
 
-    dataFile = fileSystem.open(path.c_str(), FILE_WRITE);
-    if (!dataFile)
-    {
-      httpServiceUnavailable("File open failed");
+    String path;
+
+    if (request->hasParam("path")) {
+      path = request->getParam("path")->value();
+    } else {
+      path = filename;
+    }
+
+    if (path == nullptr || path == "") {
+      log_i("Upload failed: BADDARGS");
+      httpInvalidRequestJson(request, "{\"error\":\"UPLOAD:BADARGS\"}");
+      return;
+    }
+
+    if (path[0] != '/')
+      path = "/" + path;
+
+    if (fileSystem.exists(path)) {
+      fileSystem.remove(path);
+    }
+
+    request->_tempFile = fileSystem.open(path, FILE_WRITE);
+
+    if (!request->_tempFile) {
       umountSD();
+      log_e("Upload: Failed to open filename: %s", path.c_str());
+      httpInternalErrorJson(request, "{\"error\":\"Failed to open file\"}");
       return;
+    } else {
+      if (request->_tempFile.isDirectory()) {
+        request->_tempFile.close();
+        request->_tempFile = File();
+        umountSD();
+        log_i("Path is a directory");
+        httpNotAllowedJson(request, "{\"error\":\"Path is a directory\"}");
+        return;
+      }
+      log_i("Upload: START, filename: %s", path.c_str());
     }
-    if (dataFile.isDirectory())
-    {
-      dataFile.close();
-      httpNotAllowed("Path is a directory");
-      umountSD();
-      return;
-    }
-    log_v("Upload: START, filename: %s", path.c_str());
+  }
+
+  if (!request->_tempFile) {
+    log_i("Upload failed: !states->dataFile");
     return;
   }
 
-  if (!dataFile)
-    return;
+  if (len) {
+    request->_tempFile.write(data, len);
+  }
 
-  switch (reqState.status)
+  if (final)
   {
-  case UPLOAD_FILE_WRITE:
-    dataFile.write(reqState.buf, reqState.currentSize);
-    break;
-  case UPLOAD_FILE_END:
-    dataFile.close();
+    log_i("Upload: END, Size: %d", len);
+    request->_tempFile.flush();
+    sendFileInfoJson(request, request->_tempFile);
+    request->_tempFile.close();
+    request->_tempFile = File();
     umountSD();
-    log_v("Upload POST: END, Size: %d", reqState.totalSize);
-    break;
-  case UPLOAD_FILE_ABORTED:
-    // BUGBUG: is it safe to remove the incomplete file that is stil open?
-    fileSystem.remove(dataFile.path());
-    dataFile.close();
-    umountSD();
-    log_v("Upload POST: file aborted");
-    break;
-  default:
-    log_w("Upload POST: unknown update status %d", reqState.status);
   }
+}
+
+void sendFileInfoJson(AsyncWebServerRequest *request, File file) {
+  AsyncResponseStream *response = request->beginResponseStream("application/json");
+  char sfn[FF_SFN_BUF + 1];
+  get_sfn(sfn, &file);
+
+  response->printf(
+    "{\"item\": {\"type\":\"%s\",\"name\":\"%s\",\"size\":%u,\"sfn\":\"%s\",\"last\":%u}}",
+    file.isDirectory() ? "dir" : "file",
+    file.name(),
+    file.size(),
+    sfn,
+    file.getLastWrite()
+  );
+
+  request->send(response);
 }
 
 /* */
-inline void httpOK(void)
+inline void httpOK(AsyncWebServerRequest *request)
 {
-  server.send(200, "text/plain");
+  request->send(200, "text/plain");
 }
 
-inline void httpOK(String msg)
+inline void httpOK(AsyncWebServerRequest *request, String msg)
 {
-  server.send(200, "text/plain", msg + "\r\n");
+  request->send(200, "text/plain", msg + "\r\n");
 }
 
-inline void httpInvalidRequest(void)
+inline void httpOKJson(AsyncWebServerRequest *request, String msg)
 {
-  server.send(400, "text/plain");
+  request->send(200, "application/json", msg);
 }
 
-inline void httpInvalidRequest(String msg)
+inline void httpInvalidRequest(AsyncWebServerRequest *request)
 {
-  server.send(400, "text/plain", msg + "\r\n");
+  request->send(400, "text/plain");
 }
 
-inline void httpNotFound(void)
+inline void httpInvalidRequest(AsyncWebServerRequest *request, String msg)
 {
-  server.send(404, "text/plain");
+  request->send(400, "text/plain", msg + "\r\n");
 }
 
-inline void httpNotFound(String msg)
+inline void httpInvalidRequestJson(AsyncWebServerRequest *request, String msg)
 {
-  server.send(404, "text/plain", msg + "\r\n");
+  request->send(400, "application/json", msg);
 }
 
-inline void httpNotAllowed()
+inline void httpNotFound(AsyncWebServerRequest *request)
 {
-  server.send(405, "text/plain");
+  request->send(404, "text/plain");
 }
 
-inline void httpNotAllowed(String msg)
+inline void httpNotFound(AsyncWebServerRequest *request, String msg)
 {
-  server.send(405, "text/plain", msg + "\r\n");
+  request->send(404, "text/plain", msg + "\r\n");
 }
 
-inline void httpInternalError()
+inline void httpNotFoundJson(AsyncWebServerRequest *request, String msg)
 {
-  server.send(500, "text/plain");
+  request->send(404, "application/json", msg);
 }
 
-inline void httpInternalError(String msg)
+inline void httpNotAllowed(AsyncWebServerRequest *request)
 {
-  server.send(500, "text/plain", msg + "\r\n");
+  request->send(405, "text/plain");
 }
 
-inline void httpServiceUnavailable(String msg)
+inline void httpNotAllowed(AsyncWebServerRequest *request, String msg)
 {
-  server.send(503, "text/plain", msg + "\r\n");
+  request->send(405, "text/plain", msg + "\r\n");
+}
+
+inline void httpNotAllowedJson(AsyncWebServerRequest *request, String msg)
+{
+  request->send(405, "application/json", msg);
+}
+
+inline void httpInternalError(AsyncWebServerRequest *request)
+{
+  request->send(500, "text/plain");
+}
+
+inline void httpInternalError(AsyncWebServerRequest *request, String msg)
+{
+  request->send(500, "text/plain", msg + "\r\n");
+}
+
+inline void httpInternalErrorJson(AsyncWebServerRequest *request, String msg)
+{
+  request->send(500, "application/json", msg);
+}
+
+inline void httpServiceUnavailable(AsyncWebServerRequest *request, String msg)
+{
+  request->send(503, "text/plain", msg + "\r\n");
+}
+
+inline void httpServiceUnavailableJson(AsyncWebServerRequest *request, String msg)
+{
+  request->send(503, "application/json", msg);
 }
