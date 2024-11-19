@@ -29,6 +29,9 @@
 
 static const char *default_name = "sdwifi";
 
+static unsigned mount_counter = 0;
+static unsigned umount_counter = 0;
+
 #define SD_SWITCH_PIN GPIO_NUM_26
 #define SD_POWER_PIN GPIO_NUM_27
 #define CS_SENSE_PIN GPIO_NUM_33
@@ -269,7 +272,7 @@ static int mountSD(void)
     return MOUNT_OK;
   }
 
-  log_i("SD Card mount");
+  log_i("SD Card mount: %u", ++mount_counter);
 
   if (!sd_state.mount_is_safe)
   {
@@ -281,7 +284,7 @@ static int mountSD(void)
   sd_lock();
   if (!SD_MMC.begin())
   {
-    log_e("SD Card Mount Failed");
+    log_e("SD Card Mount Failed: free mem %u, min free %u", heap_caps_get_free_size(MALLOC_CAP_DEFAULT), heap_caps_get_minimum_free_size(MALLOC_CAP_DEFAULT));
     sd_unlock();
     return MOUNT_FAILED;
   }
@@ -300,7 +303,7 @@ static void umountSD(void)
   SD_MMC.end();
   sd_unlock();
   fs_is_mounted = false;
-  log_i("In SD Card Unmount");
+  log_i("In SD Card Unmount: %u", ++umount_counter);
 }
 
 static const char *cfgparams[] = {
