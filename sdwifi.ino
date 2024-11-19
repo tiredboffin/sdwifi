@@ -155,7 +155,7 @@ void setupWebServer()
   server.enableCORS();
   /* TODO: rethink the API to simplify scripting  */
   server.on("/ping", []()
-            { httpOK(); });
+            { httpOK("pong\r\n"); });
   server.on("/sysinfo", handleInfo);
   server.on("/config", handleConfig);
   server.on("/exp", handleExperimental);
@@ -345,11 +345,15 @@ void handleInfo(void)
     txt += "\"status\":\"free\",";
     txt += "\"cardsize\":";
     txt += SD_MMC.cardSize();
-    txt += ",\"totalbytes\":";
-    txt += SD_MMC.totalBytes();
-    txt += ",\"usedbytes\":";
-    txt += SD_MMC.usedBytes();
-
+    /* Requests for total/used bytes can occasionally cause the host to fail when accessing the SD card, 
+       as they may take too long depending on the number and size of files on the card. 
+       If this information is needed, a workaround is to use the sysinfo?sd=true command. */
+    if (server.hasArg("sd") && server.arg("sd") == "true") {
+      txt += ",\"totalbytes\":";
+      txt += SD_MMC.totalBytes();
+      txt += ",\"usedbytes\":";
+      txt += SD_MMC.usedBytes();
+    }
     umountSD();
     break;
   case MOUNT_BUSY:
@@ -366,6 +370,14 @@ void handleInfo(void)
   txt += ",";
   txt += "\"activity_millis_ago\":";
   txt += millis() - sd_state.host_last_activity_millis;
+  txt += "},";
+  txt += "\"build\":{";
+  txt += "\"board\":\"";
+  txt += ARDUINO_BOARD;
+  txt += "\",";
+  txt +=  "\"esp-idf\":\"";
+  txt += esp_get_idf_version();
+  txt += "\"";
   txt += "},";
   txt += "\"cpu\":{";
   txt += "\"model\":\"";
