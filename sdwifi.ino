@@ -6,12 +6,26 @@
 
 #define PUT_UPLOAD
 
+#undef  STR_GLOBAL 
+#define STR_RESERVE_MEM_SIZE 0
+
+#undef USE_SD
+
 #include <WiFi.h>
 #include <WiFiClient.h>
 #include <WebServer.h>
 
 #include <ESPmDNS.h>
-#include <SD_MMC.h>
+#ifdef USE_SD
+#include <SPI.h>
+#include <SD.h>
+#define SD_CS_PIN		  13
+#define SD_MISO_PIN		 2
+#define SD_MOSI_PIN		15
+#define SD_SCLK_PIN		14
+#else
+  #include <SD_MMC.h>
+#endif
 #include <Preferences.h>
 #include <mbedtls/sha1.h>
 #include <esp_mac.h>
@@ -55,8 +69,14 @@ WebServer server(80);
 
 Preferences prefs;
 File dataFile;
+#ifdef USE_SD
+fs::FS &fileSystem = SD;
+#else
 fs::FS &fileSystem = SD_MMC;
-
+#endif
+#ifdef STR_GLOBAL
+String txt;
+#endif
 volatile struct
 {
   bool mount_is_safe = false;
@@ -71,11 +91,18 @@ static bool fs_is_mounted = false;
 
 void IRAM_ATTR sd_isr(void);
 
+void debug_meminfo(char *txt, unsigned count) {
+    log_e("%s, %u, %u, %u", txt, count, heap_caps_get_free_size(MALLOC_CAP_DEFAULT), heap_caps_get_minimum_free_size(MALLOC_CAP_DEFAULT));
+}
+
 void setup(void)
 {
   sd_state.host_last_activity_millis = millis();
 
   pinMode(SD_SWITCH_PIN, OUTPUT);
+  #ifdef USE_SD
+  pinMode(SD_POWER_PIN, OUTPUT);
+  #endif
   attachInterrupt(CS_SENSE_PIN, sd_isr, CHANGE);
 
   /* Make SD card available to the Host early in the process */
@@ -86,6 +113,13 @@ void setup(void)
   SPIFFS.begin();
   setupWebServer();
   server.begin();
+  debug_meminfo("setup", STR_RESERVE_MEM_SIZE);
+  #ifdef STR_GLOBAL
+  #if STR_RESERVE_MEM_SIZE > 0
+  txt.reserve(STR_RESERVE_MEM_SIZE);
+  txt = "";
+  #endif
+  #endif
 }
 
 void IRAM_ATTR sd_isr(void)
@@ -126,13 +160,16 @@ void monitor_sd(void)
 void loop(void)
 {
 
+  static int mem_warning = 0x10000;
   monitor_sd();
 
   /* handle one client at a time */
   server.handleClient();
-  delay(2);
+  if (heap_caps_get_minimum_free_size(MALLOC_CAP_DEFAULT) < mem_warning) {
+      debug_meminfo("lowmem", mem_warning);
+      mem_warning >>= 1;
+  }
 }
-
 void setupWiFi()
 {
   prefs.begin(PREF_NS, PREF_RO_MODE);
@@ -252,6 +289,9 @@ static inline void sd_lock(void)
   if (!esp32_controls_sd)
   {
     digitalWrite(SD_SWITCH_PIN, LOW);
+#ifdef USE_SD
+    SPI.begin(SD_SCLK_PIN,SD_MISO_PIN,SD_MOSI_PIN,SD_CS_PIN);
+#endif
   }
 }
 
@@ -259,6 +299,21 @@ static inline void sd_unlock(void)
 {
   if (!esp32_controls_sd)
   {
+ #ifdef USE_SD
+    #define SD_D0_PIN		   2
+    #define SD_D1_PIN		   4
+    #define SD_D2_PIN		  12
+    #define SD_D3_PIN		  13
+    #define SD_CLK_PIN	  14
+    #define SD_CMD_PIN    15
+    pinMode(SD_D0_PIN,  INPUT_PULLUP);
+    pinMode(SD_D1_PIN,  INPUT_PULLUP);
+    pinMode(SD_D2_PIN,  INPUT_PULLUP);
+    pinMode(SD_D3_PIN,  INPUT_PULLUP);
+    pinMode(SD_CLK_PIN, INPUT_PULLUP);
+    pinMode(SD_CMD_PIN, INPUT_PULLUP);
+    SPI.end();
+ #endif
     digitalWrite(SD_SWITCH_PIN, HIGH);
   }
 }
@@ -272,7 +327,14 @@ static int mountSD(void)
     return MOUNT_OK;
   }
 
-  log_i("SD Card mount: %u", ++mount_counter);
+  //log_i("SD Card mount: %u", mount_counter);
+
+  if ((mount_counter % 10) == 0) {
+      //log_i("SD Card mount: %u", mount_counter);
+      debug_meminfo("m", mount_counter);
+  }
+
+  ++mount_counter;
 
   if (!sd_state.mount_is_safe)
   {
@@ -282,10 +344,15 @@ static int mountSD(void)
 
   /* get control over flash NAND */
   sd_lock();
+  #ifdef USE_SD
+  if (!SD.begin(SD_CS_PIN))
+  #else
   if (!SD_MMC.begin())
+  #endif
   {
-    log_e("SD Card Mount Failed: free mem %u, min free %u", heap_caps_get_free_size(MALLOC_CAP_DEFAULT), heap_caps_get_minimum_free_size(MALLOC_CAP_DEFAULT));
     sd_unlock();
+    //log_i("SD Card mount: %u", mount_counter);
+    debug_meminfo("f", mount_counter);
     return MOUNT_FAILED;
   }
   fs_is_mounted = true;
@@ -300,10 +367,20 @@ static void umountSD(void)
     log_e("Double Unmount: ignore");
     return;
   }
+#ifdef USE_SD
+  SD.end();
+#else
   SD_MMC.end();
+#endif
   sd_unlock();
   fs_is_mounted = false;
-  log_i("In SD Card Unmount: %u", ++umount_counter);
+  if ((umount_counter % 10) == 0) {
+      //log_i("SD Card umount: %u", umount_counter);
+      debug_meminfo("u", umount_counter);
+  }
+  ++umount_counter;
+
+  //log_i("In SD Card Unmount: %u", ++umount_counter);
 }
 
 static const char *cfgparams[] = {
@@ -335,36 +412,69 @@ static String getInterfaceMacAddress(esp_mac_type_t interface)
   return mac;
 }
 
+#define ENABLE_SD_SYSINFO 
+
 /* CMD: Return some info */
+
+
 void handleInfo(void)
 {
-  String txt;
+
+#if !defined(STR_GLOBAL)
+String txt;
+#if STR_RESERVE_MEM_SIZE > 0
+   txt.reserve(STR_RESERVE_MEM_SIZE);
+#endif
+#endif
+
+  static unsigned info_counter = 0;
+  if ((info_counter % 10) == 0)
+        debug_meminfo("i", info_counter);
+
+  info_counter++;
 
   uint8_t tmp[6];
   txt = "{\"info\":{\"filesystem\":{";
-  switch (mountSD())
-  {
-  case MOUNT_OK:
-    txt += "\"status\":\"free\",";
-    txt += "\"cardsize\":";
-    txt += SD_MMC.cardSize();
-    /* Requests for total/used bytes can occasionally cause the host to fail when accessing the SD card, 
-       as they may take too long depending on the number and size of files on the card. 
-       If this information is needed, a workaround is to use the sysinfo?sd=true command. */
-    if (server.hasArg("sd") && server.arg("sd") == "true") {
-      txt += ",\"totalbytes\":";
-      txt += SD_MMC.totalBytes();
-      txt += ",\"usedbytes\":";
-      txt += SD_MMC.usedBytes();
+  if (server.hasArg("sd")) {
+    switch (mountSD())
+    {
+    case MOUNT_OK:
+      txt += "\"status\":\"free\",";
+      txt += "\"cardsize\":";
+      #ifdef USE_SD
+      txt += SD.cardSize();
+      /* Requests for total/used bytes can occasionally cause the host to fail when accessing the SD card, 
+        as they may take too long depending on the number and size of files on the card. 
+        If this information is needed, a workaround is to use the sysinfo?sd=true command. */
+      if (server.arg("sd") == "full") {
+        txt += ",\"totalbytes\":";
+        txt += SD.totalBytes();
+        txt += ",\"usedbytes\":";
+        txt += SD.usedBytes();
+      }
+      #else
+      txt += SD_MMC.cardSize();
+      /* Requests for total/used bytes can occasionally cause the host to fail when accessing the SD card, 
+        as they may take too long depending on the number and size of files on the card. 
+        If this information is needed, a workaround is to use the sysinfo?sd=true command. */
+      if (server.arg("sd") == "full") {
+        txt += ",\"totalbytes\":";
+        txt += SD_MMC.totalBytes();
+        txt += ",\"usedbytes\":";
+        txt += SD_MMC.usedBytes();
+      }
+      #endif
+      umountSD();
+      break;
+    case MOUNT_BUSY:
+      txt += "\"status\":\"busy\"";
+      break;
+    default:
+      txt += "\"status\":\"failed\"";
+      break;
     }
-    umountSD();
-    break;
-  case MOUNT_BUSY:
-    txt += "\"status\":\"busy\"";
-    break;
-  default:
-    txt += "\"status\":\"failed\"";
-    break;
+  } else {
+    txt += "\"status\":\"info disabled\"";
   }
   txt += "},";
   txt += "\"isr\":{";
@@ -374,6 +484,14 @@ void handleInfo(void)
   txt += "\"activity_millis_ago\":";
   txt += millis() - sd_state.host_last_activity_millis;
   txt += "},";
+  txt += "\"meminfo\":{";
+  txt += "\"free_size\":";
+  txt += heap_caps_get_free_size(MALLOC_CAP_DEFAULT);
+  txt += ",";
+  txt += "\"minimum_free_size\":";
+  txt += heap_caps_get_minimum_free_size(MALLOC_CAP_DEFAULT);
+  txt += "},";
+  
   txt += "\"build\":{";
   txt += "\"board\":\"";
   txt += ARDUINO_BOARD;
@@ -432,13 +550,21 @@ void handleInfo(void)
   txt += "\"}}}}";
 
   server.send(200, "application/json", txt);
+  #if STR_RESERVE_MEM_SIZE > 0
+  txt = "";
+  #endif
 }
+
 
 /* CMD: Update configuration parameters */
 void handleConfig(void)
 {
 
   String txt;
+
+#ifdef STR_RESERVE_MEM_SIZE
+  txt.reserve(STR_RESERVE_MEM_SIZE);
+#endif STR_RESERVE_MEM_SIZE
 
   if (server.args() == 0)
   {
@@ -476,6 +602,7 @@ void handleConfig(void)
   }
   prefs.end();
   httpOK(txt);
+  txt = "";
 }
 
 /* CMD: wificonnect: compatibility with original Fysetc web app */
@@ -539,14 +666,18 @@ void handleExperimental(void)
     {
       if (v == "esp32" || v == "low")
       {
-        digitalWrite(SD_SWITCH_PIN, LOW);
-        esp32_controls_sd = true;
+        if (!esp32_controls_sd) {
+          sd_lock();
+          esp32_controls_sd = true;
+        }
         txt += " SD controlled by ESP32";
       }
       else if (v == "host" || v == "high")
       {
-        digitalWrite(SD_SWITCH_PIN, HIGH);
-        esp32_controls_sd = false;
+        if (esp32_controls_sd) {
+          esp32_controls_sd = false;
+          sd_unlock();
+        }
         txt += " SD controlled by Host";
       }
       else
@@ -673,6 +804,10 @@ void handleList()
     path = "/" + path;
 
   String txt;
+
+#ifdef STR_RESERVE_MEM_SIZE
+  txt.reserve(STR_RESERVE_MEM_SIZE);
+#endif STR_RESERVE_MEM_SIZE
 
   if (mountSD() != MOUNT_OK)
   {
@@ -1096,31 +1231,21 @@ void handleRmdir()
 
   String path = server.arg("path");
 
-  if (path[0] != '/')
-  {
+  if (path[0] != '/') {
     path = "/" + path;
   }
-
   /* Trying to delete root */
-  if (path.length() < 2)
-  {
-    httpInvalidRequest("RMDIR:BADARGS");
-    return;
-  }
-
-  if (!fileSystem.exists(path))
-  {
+  if (path.length() < 2) {
+     httpInvalidRequest("RMDIR:BADARGS");
+  } else if (!fileSystem.exists(path)) {
     httpNotFound();
-    return;
+  } else {
+    if (!fileSystem.rmdir(path)) {
+      httpInternalError();
+    } else {
+      httpOK();
+    }
   }
-
-  if (!fileSystem.rmdir(path))
-  {
-    httpInternalError();
-    return;
-  }
-
-  httpOK();
   umountSD();
 }
 
