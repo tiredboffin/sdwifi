@@ -6,10 +6,9 @@
 
 #define PUT_UPLOAD
 
-#undef  STR_GLOBAL 
-#define STR_RESERVE_MEM_SIZE 0
+#define MIN_MEM_THRESHOLD 32768
 
-#undef USE_SD
+//#define USE_SD 
 
 #include <WiFi.h>
 #include <WiFiClient.h>
@@ -69,14 +68,14 @@ WebServer server(80);
 
 Preferences prefs;
 File dataFile;
+static int mem_warning;
+
 #ifdef USE_SD
 fs::FS &fileSystem = SD;
 #else
 fs::FS &fileSystem = SD_MMC;
 #endif
-#ifdef STR_GLOBAL
-String txt;
-#endif
+
 volatile struct
 {
   bool mount_is_safe = false;
@@ -113,13 +112,7 @@ void setup(void)
   SPIFFS.begin();
   setupWebServer();
   server.begin();
-  debug_meminfo("setup", STR_RESERVE_MEM_SIZE);
-  #ifdef STR_GLOBAL
-  #if STR_RESERVE_MEM_SIZE > 0
-  txt.reserve(STR_RESERVE_MEM_SIZE);
-  txt = "";
-  #endif
-  #endif
+  debug_meminfo("setup", 0);
 }
 
 void IRAM_ATTR sd_isr(void)
@@ -160,15 +153,22 @@ void monitor_sd(void)
 void loop(void)
 {
 
-  static int mem_warning = 0x10000;
   monitor_sd();
 
   /* handle one client at a time */
   server.handleClient();
-  if (heap_caps_get_minimum_free_size(MALLOC_CAP_DEFAULT) < mem_warning) {
-      debug_meminfo("lowmem", mem_warning);
-      mem_warning >>= 1;
+  
+  /* warn and reboot on low memory */
+  if (!mem_warning && heap_caps_get_minimum_free_size(MALLOC_CAP_DEFAULT) < MIN_MEM_THRESHOLD*2)
+  {
+      debug_meminfo("low mem", ++mem_warning);
   }
+  if (mem_warning && heap_caps_get_minimum_free_size(MALLOC_CAP_DEFAULT) < MIN_MEM_THRESHOLD)
+  {
+      debug_meminfo("crtical mem", ++mem_warning);
+      ESP.restart();
+  }
+
 }
 void setupWiFi()
 {
@@ -327,12 +327,7 @@ static int mountSD(void)
     return MOUNT_OK;
   }
 
-  //log_i("SD Card mount: %u", mount_counter);
-
-  if ((mount_counter % 10) == 0) {
-      //log_i("SD Card mount: %u", mount_counter);
-      debug_meminfo("m", mount_counter);
-  }
+  log_i("SD Card mount: %u", mount_counter);
 
   ++mount_counter;
 
@@ -351,8 +346,7 @@ static int mountSD(void)
   #endif
   {
     sd_unlock();
-    //log_i("SD Card mount: %u", mount_counter);
-    debug_meminfo("f", mount_counter);
+    log_i("SD Card mount: %u", mount_counter);
     return MOUNT_FAILED;
   }
   fs_is_mounted = true;
@@ -373,14 +367,10 @@ static void umountSD(void)
   SD_MMC.end();
 #endif
   sd_unlock();
-  fs_is_mounted = false;
-  if ((umount_counter % 10) == 0) {
-      //log_i("SD Card umount: %u", umount_counter);
-      debug_meminfo("u", umount_counter);
-  }
-  ++umount_counter;
+  log_i("In SD Card Unmount: %u", umount_counter);
 
-  //log_i("In SD Card Unmount: %u", ++umount_counter);
+  ++umount_counter;
+  fs_is_mounted = false;
 }
 
 static const char *cfgparams[] = {
@@ -412,58 +402,39 @@ static String getInterfaceMacAddress(esp_mac_type_t interface)
   return mac;
 }
 
-#define ENABLE_SD_SYSINFO 
-
 /* CMD: Return some info */
-
-
 void handleInfo(void)
 {
 
-#if !defined(STR_GLOBAL)
-String txt;
-#if STR_RESERVE_MEM_SIZE > 0
-   txt.reserve(STR_RESERVE_MEM_SIZE);
-#endif
-#endif
-
-  static unsigned info_counter = 0;
-  if ((info_counter % 10) == 0)
-        debug_meminfo("i", info_counter);
-
-  info_counter++;
+  String txt;
 
   uint8_t tmp[6];
+
   txt = "{\"info\":{\"filesystem\":{";
-  if (server.hasArg("sd")) {
+  if (server.hasArg("sd") && server.arg("sd") == "none") {
+      txt += "\"status\":\"info disabled\"";
+  } else {
     switch (mountSD())
     {
     case MOUNT_OK:
+        /* Requests for total/used bytes take too long depending on the number and size of files on the card. */
+      uint64_t card_size, total_bytes, used_bytes;
+#ifdef USE_SD
+      card_size = SD.cardSize();
+      total_bytes = SD.totalBytes();
+      used_bytes = SD.usedBytes();
+#else
+      card_size = SD_MMC.cardSize();
+      total_bytes = SD_MMC.totalBytes();
+      used_bytes = SD_MMC.usedBytes();
+#endif
       txt += "\"status\":\"free\",";
       txt += "\"cardsize\":";
-      #ifdef USE_SD
-      txt += SD.cardSize();
-      /* Requests for total/used bytes can occasionally cause the host to fail when accessing the SD card, 
-        as they may take too long depending on the number and size of files on the card. 
-        If this information is needed, a workaround is to use the sysinfo?sd=true command. */
-      if (server.arg("sd") == "full") {
-        txt += ",\"totalbytes\":";
-        txt += SD.totalBytes();
-        txt += ",\"usedbytes\":";
-        txt += SD.usedBytes();
-      }
-      #else
-      txt += SD_MMC.cardSize();
-      /* Requests for total/used bytes can occasionally cause the host to fail when accessing the SD card, 
-        as they may take too long depending on the number and size of files on the card. 
-        If this information is needed, a workaround is to use the sysinfo?sd=true command. */
-      if (server.arg("sd") == "full") {
-        txt += ",\"totalbytes\":";
-        txt += SD_MMC.totalBytes();
-        txt += ",\"usedbytes\":";
-        txt += SD_MMC.usedBytes();
-      }
-      #endif
+      txt += card_size;
+      txt += ",\"totalbytes\":";
+      txt += total_bytes;
+      txt += ",\"usedbytes\":";
+      txt += used_bytes;
       umountSD();
       break;
     case MOUNT_BUSY:
@@ -473,8 +444,6 @@ String txt;
       txt += "\"status\":\"failed\"";
       break;
     }
-  } else {
-    txt += "\"status\":\"info disabled\"";
   }
   txt += "},";
   txt += "\"isr\":{";
@@ -491,7 +460,6 @@ String txt;
   txt += "\"minimum_free_size\":";
   txt += heap_caps_get_minimum_free_size(MALLOC_CAP_DEFAULT);
   txt += "},";
-  
   txt += "\"build\":{";
   txt += "\"board\":\"";
   txt += ARDUINO_BOARD;
@@ -548,11 +516,7 @@ String txt;
   txt += "\",\"BT\":\"";
   txt += getInterfaceMacAddress(ESP_MAC_BT);
   txt += "\"}}}}";
-
   server.send(200, "application/json", txt);
-  #if STR_RESERVE_MEM_SIZE > 0
-  txt = "";
-  #endif
 }
 
 
@@ -561,11 +525,6 @@ void handleConfig(void)
 {
 
   String txt;
-
-#ifdef STR_RESERVE_MEM_SIZE
-  txt.reserve(STR_RESERVE_MEM_SIZE);
-#endif STR_RESERVE_MEM_SIZE
-
   if (server.args() == 0)
   {
     txt = "Configuration parameters:\n\n";
@@ -602,7 +561,6 @@ void handleConfig(void)
   }
   prefs.end();
   httpOK(txt);
-  txt = "";
 }
 
 /* CMD: wificonnect: compatibility with original Fysetc web app */
@@ -804,10 +762,6 @@ void handleList()
     path = "/" + path;
 
   String txt;
-
-#ifdef STR_RESERVE_MEM_SIZE
-  txt.reserve(STR_RESERVE_MEM_SIZE);
-#endif STR_RESERVE_MEM_SIZE
 
   if (mountSD() != MOUNT_OK)
   {
