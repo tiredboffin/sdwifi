@@ -6,12 +6,25 @@
 
 #define PUT_UPLOAD
 
+#define MIN_MEM_THRESHOLD 32768
+
+//#define USE_SD 
+
 #include <WiFi.h>
 #include <WiFiClient.h>
 #include <WebServer.h>
 
 #include <ESPmDNS.h>
-#include <SD_MMC.h>
+#ifdef USE_SD
+#include <SPI.h>
+#include <SD.h>
+#define SD_CS_PIN		  13
+#define SD_MISO_PIN		 2
+#define SD_MOSI_PIN		15
+#define SD_SCLK_PIN		14
+#else
+  #include <SD_MMC.h>
+#endif
 #include <Preferences.h>
 #include <mbedtls/sha1.h>
 #include <esp_mac.h>
@@ -28,6 +41,9 @@
 #endif
 
 static const char *default_name = "sdwifi";
+
+static unsigned mount_counter = 0;
+static unsigned umount_counter = 0;
 
 #define SD_SWITCH_PIN GPIO_NUM_26
 #define SD_POWER_PIN GPIO_NUM_27
@@ -52,7 +68,13 @@ WebServer server(80);
 
 Preferences prefs;
 File dataFile;
+static int mem_warning;
+
+#ifdef USE_SD
+fs::FS &fileSystem = SD;
+#else
 fs::FS &fileSystem = SD_MMC;
+#endif
 
 volatile struct
 {
@@ -68,11 +90,18 @@ static bool fs_is_mounted = false;
 
 void IRAM_ATTR sd_isr(void);
 
+void debug_meminfo(char *txt, unsigned count) {
+    log_e("%s, %u, %u, %u", txt, count, heap_caps_get_free_size(MALLOC_CAP_DEFAULT), heap_caps_get_minimum_free_size(MALLOC_CAP_DEFAULT));
+}
+
 void setup(void)
 {
   sd_state.host_last_activity_millis = millis();
 
   pinMode(SD_SWITCH_PIN, OUTPUT);
+  #ifdef USE_SD
+  pinMode(SD_POWER_PIN, OUTPUT);
+  #endif
   attachInterrupt(CS_SENSE_PIN, sd_isr, CHANGE);
 
   /* Make SD card available to the Host early in the process */
@@ -83,6 +112,7 @@ void setup(void)
   SPIFFS.begin();
   setupWebServer();
   server.begin();
+  debug_meminfo("setup", 0);
 }
 
 void IRAM_ATTR sd_isr(void)
@@ -127,9 +157,19 @@ void loop(void)
 
   /* handle one client at a time */
   server.handleClient();
-  delay(2);
-}
+  
+  /* warn and reboot on low memory */
+  if (!mem_warning && heap_caps_get_minimum_free_size(MALLOC_CAP_DEFAULT) < MIN_MEM_THRESHOLD*2)
+  {
+      debug_meminfo("low mem", ++mem_warning);
+  }
+  if (mem_warning && heap_caps_get_minimum_free_size(MALLOC_CAP_DEFAULT) < MIN_MEM_THRESHOLD)
+  {
+      debug_meminfo("crtical mem", ++mem_warning);
+      ESP.restart();
+  }
 
+}
 void setupWiFi()
 {
   prefs.begin(PREF_NS, PREF_RO_MODE);
@@ -155,7 +195,7 @@ void setupWebServer()
   server.enableCORS();
   /* TODO: rethink the API to simplify scripting  */
   server.on("/ping", []()
-            { httpOK(); });
+            { httpOK("pong\r\n"); });
   server.on("/sysinfo", handleInfo);
   server.on("/config", handleConfig);
   server.on("/exp", handleExperimental);
@@ -249,6 +289,9 @@ static inline void sd_lock(void)
   if (!esp32_controls_sd)
   {
     digitalWrite(SD_SWITCH_PIN, LOW);
+#ifdef USE_SD
+    SPI.begin(SD_SCLK_PIN,SD_MISO_PIN,SD_MOSI_PIN,SD_CS_PIN);
+#endif
   }
 }
 
@@ -256,6 +299,21 @@ static inline void sd_unlock(void)
 {
   if (!esp32_controls_sd)
   {
+ #ifdef USE_SD
+    #define SD_D0_PIN		   2
+    #define SD_D1_PIN		   4
+    #define SD_D2_PIN		  12
+    #define SD_D3_PIN		  13
+    #define SD_CLK_PIN	  14
+    #define SD_CMD_PIN    15
+    pinMode(SD_D0_PIN,  INPUT_PULLUP);
+    pinMode(SD_D1_PIN,  INPUT_PULLUP);
+    pinMode(SD_D2_PIN,  INPUT_PULLUP);
+    pinMode(SD_D3_PIN,  INPUT_PULLUP);
+    pinMode(SD_CLK_PIN, INPUT_PULLUP);
+    pinMode(SD_CMD_PIN, INPUT_PULLUP);
+    SPI.end();
+ #endif
     digitalWrite(SD_SWITCH_PIN, HIGH);
   }
 }
@@ -269,7 +327,9 @@ static int mountSD(void)
     return MOUNT_OK;
   }
 
-  log_i("SD Card mount");
+  log_i("SD Card mount: %u", mount_counter);
+
+  ++mount_counter;
 
   if (!sd_state.mount_is_safe)
   {
@@ -279,10 +339,14 @@ static int mountSD(void)
 
   /* get control over flash NAND */
   sd_lock();
+  #ifdef USE_SD
+  if (!SD.begin(SD_CS_PIN))
+  #else
   if (!SD_MMC.begin())
+  #endif
   {
-    log_e("SD Card Mount Failed");
     sd_unlock();
+    log_i("SD Card mount: %u", mount_counter);
     return MOUNT_FAILED;
   }
   fs_is_mounted = true;
@@ -297,10 +361,16 @@ static void umountSD(void)
     log_e("Double Unmount: ignore");
     return;
   }
+#ifdef USE_SD
+  SD.end();
+#else
   SD_MMC.end();
+#endif
   sd_unlock();
+  log_i("In SD Card Unmount: %u", umount_counter);
+
+  ++umount_counter;
   fs_is_mounted = false;
-  log_i("In SD Card Unmount");
 }
 
 static const char *cfgparams[] = {
@@ -335,29 +405,45 @@ static String getInterfaceMacAddress(esp_mac_type_t interface)
 /* CMD: Return some info */
 void handleInfo(void)
 {
+
   String txt;
 
   uint8_t tmp[6];
-  txt = "{\"info\":{\"filesystem\":{";
-  switch (mountSD())
-  {
-  case MOUNT_OK:
-    txt += "\"status\":\"free\",";
-    txt += "\"cardsize\":";
-    txt += SD_MMC.cardSize();
-    txt += ",\"totalbytes\":";
-    txt += SD_MMC.totalBytes();
-    txt += ",\"usedbytes\":";
-    txt += SD_MMC.usedBytes();
 
-    umountSD();
-    break;
-  case MOUNT_BUSY:
-    txt += "\"status\":\"busy\"";
-    break;
-  default:
-    txt += "\"status\":\"failed\"";
-    break;
+  txt = "{\"info\":{\"filesystem\":{";
+  if (server.hasArg("sd") && server.arg("sd") == "none") {
+      txt += "\"status\":\"info disabled\"";
+  } else {
+    switch (mountSD())
+    {
+    case MOUNT_OK:
+        /* Requests for total/used bytes take too long depending on the number and size of files on the card. */
+      uint64_t card_size, total_bytes, used_bytes;
+#ifdef USE_SD
+      card_size = SD.cardSize();
+      total_bytes = SD.totalBytes();
+      used_bytes = SD.usedBytes();
+#else
+      card_size = SD_MMC.cardSize();
+      total_bytes = SD_MMC.totalBytes();
+      used_bytes = SD_MMC.usedBytes();
+#endif
+      txt += "\"status\":\"free\",";
+      txt += "\"cardsize\":";
+      txt += card_size;
+      txt += ",\"totalbytes\":";
+      txt += total_bytes;
+      txt += ",\"usedbytes\":";
+      txt += used_bytes;
+      umountSD();
+      break;
+    case MOUNT_BUSY:
+      txt += "\"status\":\"busy\"";
+      break;
+    default:
+      txt += "\"status\":\"failed\"";
+      break;
+    }
   }
   txt += "},";
   txt += "\"isr\":{";
@@ -366,6 +452,21 @@ void handleInfo(void)
   txt += ",";
   txt += "\"activity_millis_ago\":";
   txt += millis() - sd_state.host_last_activity_millis;
+  txt += "},";
+  txt += "\"meminfo\":{";
+  txt += "\"free_size\":";
+  txt += heap_caps_get_free_size(MALLOC_CAP_DEFAULT);
+  txt += ",";
+  txt += "\"minimum_free_size\":";
+  txt += heap_caps_get_minimum_free_size(MALLOC_CAP_DEFAULT);
+  txt += "},";
+  txt += "\"build\":{";
+  txt += "\"board\":\"";
+  txt += ARDUINO_BOARD;
+  txt += "\",";
+  txt +=  "\"esp-idf\":\"";
+  txt += esp_get_idf_version();
+  txt += "\"";
   txt += "},";
   txt += "\"cpu\":{";
   txt += "\"model\":\"";
@@ -415,16 +516,15 @@ void handleInfo(void)
   txt += "\",\"BT\":\"";
   txt += getInterfaceMacAddress(ESP_MAC_BT);
   txt += "\"}}}}";
-
   server.send(200, "application/json", txt);
 }
+
 
 /* CMD: Update configuration parameters */
 void handleConfig(void)
 {
 
   String txt;
-
   if (server.args() == 0)
   {
     txt = "Configuration parameters:\n\n";
@@ -524,14 +624,18 @@ void handleExperimental(void)
     {
       if (v == "esp32" || v == "low")
       {
-        digitalWrite(SD_SWITCH_PIN, LOW);
-        esp32_controls_sd = true;
+        if (!esp32_controls_sd) {
+          sd_lock();
+          esp32_controls_sd = true;
+        }
         txt += " SD controlled by ESP32";
       }
       else if (v == "host" || v == "high")
       {
-        digitalWrite(SD_SWITCH_PIN, HIGH);
-        esp32_controls_sd = false;
+        if (esp32_controls_sd) {
+          esp32_controls_sd = false;
+          sd_unlock();
+        }
         txt += " SD controlled by Host";
       }
       else
@@ -1081,31 +1185,21 @@ void handleRmdir()
 
   String path = server.arg("path");
 
-  if (path[0] != '/')
-  {
+  if (path[0] != '/') {
     path = "/" + path;
   }
-
   /* Trying to delete root */
-  if (path.length() < 2)
-  {
-    httpInvalidRequest("RMDIR:BADARGS");
-    return;
-  }
-
-  if (!fileSystem.exists(path))
-  {
+  if (path.length() < 2) {
+     httpInvalidRequest("RMDIR:BADARGS");
+  } else if (!fileSystem.exists(path)) {
     httpNotFound();
-    return;
+  } else {
+    if (!fileSystem.rmdir(path)) {
+      httpInternalError();
+    } else {
+      httpOK();
+    }
   }
-
-  if (!fileSystem.rmdir(path))
-  {
-    httpInternalError();
-    return;
-  }
-
-  httpOK();
   umountSD();
 }
 
