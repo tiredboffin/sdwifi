@@ -29,6 +29,7 @@
 #include <mbedtls/sha1.h>
 #include <esp_mac.h>
 #include <SPIFFS.h>
+#include "IniFile.h"
 
 #if defined __has_include
 #if __has_include(<mbedtls/compat-2.x.h>)
@@ -152,8 +153,10 @@ void monitor_sd(void)
 
 void loop(void)
 {
-
   monitor_sd();
+
+  /* check for config file on sd, if found get its values and remove it */
+  configWifi();
 
   /* handle one client at a time */
   server.handleClient();
@@ -218,6 +221,7 @@ void setupWebServer()
   server.on("/wificonnect", HTTP_POST, handleWiFiConnect);
   server.on("/wifiap", HTTP_POST, handleWiFiAP);
   server.on("/delete", handleRemove);
+  server.on("/configWifi",handleConfigWifi);
 
   /* Static content */
   server.serveStatic("/", SPIFFS, "/");
@@ -253,6 +257,14 @@ static bool setupAP(void)
       }
     }
   }
+
+  IPAddress ip,mask;
+  if(ip.fromString(prefs.getString("ip")))
+  {
+    mask.fromString(prefs.getString("mask"));
+    WiFi.softAPConfig(ip,ip,mask);
+  }
+
   log_i("Soft AP created: %s", WiFi.softAPSSID());
   return true;
 }
@@ -261,9 +273,20 @@ static bool setupSTA(void)
 {
   String ssid = prefs.getString("sta_ssid");
   String password = prefs.getString("sta_password");
+  IPAddress ip,mask,gateway,pdns,sdns;
+
   int i = 0;
 
   WiFi.mode(WIFI_STA);
+  if(ip.fromString(prefs.getString("ip")))
+  {
+    mask.fromString(prefs.getString("mask"));
+    gateway.fromString(prefs.getString("gateway"));
+    pdns.fromString(prefs.getString("pdns"));
+    sdns.fromString(prefs.getString("sdns"));
+    WiFi.config(ip,gateway,mask,pdns,sdns);
+  }
+
   WiFi.begin(ssid, password);
 
   WiFi.waitForConnectResult(WIFI_STA_TIMEOUT);
@@ -402,6 +425,126 @@ static String getInterfaceMacAddress(esp_mac_type_t interface)
   return mac;
 }
 
+static bool iniNotFound=false;
+
+/* try to config wifi from sd file */
+void configWifi(void)
+{
+  char* filename = "/sdwifi_config.ini";
+
+  if(iniNotFound)
+    return;
+
+  log_i("configWifi");
+  if (mountSD() != MOUNT_OK)
+  {
+    return;
+  }
+
+  try
+  {
+    IniFile ini(filename);
+    if (!ini.open()) {
+      log_i("Ini file %s does not exist",filename);
+      throw -1;
+    }
+    log_i("Ini file %s exists",filename);
+
+    const size_t bufferLen = 80;
+    char buffer[bufferLen];
+
+    // Check the file is valid. This can be used to warn if any lines
+    // are longer than the buffer.
+    if (!ini.validate(buffer, bufferLen)) {
+      log_e("ini file %s not valid: %d",ini.getFilename(),ini.getError());
+      throw -2;
+    }
+
+    prefs.begin(PREF_NS, PREF_RW_MODE);
+    prefs.clear();
+    // "sta_ssid", "sta_password", "ap_ssid", "ap_password", "hostname"
+    // Fetch a value from a key which is present
+    if (ini.getValue("wifi", "sta_ssid", buffer, bufferLen)) {
+      log_i("wifi sta_ssid: %s",buffer);
+      prefs.putString("sta_ssid", buffer);
+    }
+
+    // Fetch a value from a key which is present
+    if (ini.getValue("wifi", "sta_password", buffer, bufferLen)) {
+      log_i("wifi sta_password: %s",buffer);
+      prefs.putString("sta_password", buffer);
+    }
+
+    // Fetch a value from a key which is present
+    if (ini.getValue("wifi", "ap_ssid", buffer, bufferLen)) {
+      log_i("wifi ap_ssid: %s",buffer);
+      prefs.putString("ap_ssid", buffer);
+    }
+
+    // Fetch a value from a key which is present
+    if (ini.getValue("wifi", "ap_password", buffer, bufferLen)) {
+      log_i("wifi ap_password: %s",buffer);
+      prefs.putString("ap_password", buffer);
+    }
+
+    // Fetch a value from a key which is present
+    if (ini.getValue("wifi", "hostname", buffer, bufferLen)) {
+      log_i("wifi hostname: %s",buffer);
+      prefs.putString("hostname", buffer);
+    }
+
+    // Fetch a value from a key which is present
+    if (ini.getValue("wifi", "ip", buffer, bufferLen)) {
+      log_i("wifi ip: %s",buffer);
+      prefs.putString("ip", buffer);
+    }
+
+    // Fetch a value from a key which is present
+    if (ini.getValue("wifi", "gateway", buffer, bufferLen)) {
+      log_i("wifi gateway: %s",buffer);
+      prefs.putString("gateway", buffer);
+    }
+
+    // Fetch a value from a key which is present
+    if (ini.getValue("wifi", "mask", buffer, bufferLen)) {
+      log_i("wifi mask: %s",buffer);
+      prefs.putString("mask", buffer);
+    }
+
+    // Fetch a value from a key which is present
+    if (ini.getValue("wifi", "pdns", buffer, bufferLen)) {
+      log_i("wifi pdns: %s",buffer);
+      prefs.putString("pdns", buffer);
+    }
+
+    // Fetch a value from a key which is present
+    if (ini.getValue("wifi", "sdns", buffer, bufferLen)) {
+      log_i("wifi sdns: %s",buffer);
+      prefs.putString("sdns", buffer);
+    }
+
+    prefs.end();
+    log_i("remove config file: %s",filename);
+    fileSystem.remove(filename);
+    log_i("restart!");
+    ESP.restart();
+  }
+  catch(...)
+  {
+
+  }
+
+  umountSD();
+  iniNotFound=true;
+}
+
+void handleConfigWifi(void)
+{
+  configWifi();
+  httpOK();
+}
+
+
 /* CMD: Return some info */
 void handleInfo(void)
 {
@@ -501,6 +644,13 @@ void handleInfo(void)
   txt += "\",";
   txt += "\"Gateway\":\"";
   txt += WiFi.gatewayIP().toString();
+  txt += "\",";
+  txt += "\"Hostanme\":\"";
+  txt += MDNS.hostname(0);
+  txt += "/";
+  prefs.begin(PREF_NS, PREF_RO_MODE);
+  txt += prefs.getString("hostname");
+  prefs.end();
   txt += "\",";
   txt += "\"DNS\":[\"";
   txt += WiFi.dnsIP(0).toString();
