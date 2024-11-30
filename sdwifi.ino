@@ -88,6 +88,8 @@ volatile struct
 
 static bool esp32_controls_sd = false;
 static bool fs_is_mounted = false;
+static bool loadConfigIniDone=false;
+
 
 void IRAM_ATTR sd_isr(void);
 
@@ -434,14 +436,12 @@ static String getInterfaceMacAddress(esp_mac_type_t interface)
   return mac;
 }
 
-static bool iniNotFound=false;
-
 /* try to config wifi from sd file */
 void loadConfigIni(void)
 {
   char* filename = "/sdwifi_config.ini";
 
-  if(iniNotFound)
+  if(loadConfigIniDone)
     return;
 
   if (mountSD() != MOUNT_OK)
@@ -501,7 +501,7 @@ try
   }
 
   umountSD();
-  iniNotFound=true;
+  loadConfigIniDone=true;
 }
 
 void handleConfigWifi(void)
