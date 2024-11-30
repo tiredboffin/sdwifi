@@ -397,9 +397,10 @@ static void umountSD(void)
   ++umount_counter;
   fs_is_mounted = false;
 }
-
+//wifi config parameters recognized in config?param=value and in sdwifi_config.ini file
 static const char *cfgparams[] = {
-    "sta_ssid", "sta_password", "ap_ssid", "ap_password", "hostname"};
+      "sta_ssid", "sta_password", "ap_ssid", "ap_password", "hostname", "ip", "gateway", "mask", "pdns", "sdns"
+       };
 
 static bool cfgparamVerify(const char *n)
 {
@@ -443,11 +444,15 @@ void configWifi(void)
     return;
   }
 
-  try
+try
   {
+    if (!fileSystem.exists(filename)) {
+      log_i("Ini file %s does not exist",filename);
+      throw -1;
+    }
     IniFile ini(filename);
     if (!ini.open()) {
-      log_i("Ini file %s does not exist",filename);
+      log_e("Failed to open file %s",filename);
       throw -1;
     }
     log_i("Ini file %s exists",filename);
@@ -461,68 +466,17 @@ void configWifi(void)
       log_e("ini file %s not valid: %d",ini.getFilename(),ini.getError());
       throw -2;
     }
-
+    
     prefs.begin(PREF_NS, PREF_RW_MODE);
     prefs.clear();
-    // "sta_ssid", "sta_password", "ap_ssid", "ap_password", "hostname"
-    // Fetch a value from a key which is present
-    if (ini.getValue("wifi", "sta_ssid", buffer, bufferLen)) {
-      log_i("wifi sta_ssid: %s",buffer);
-      prefs.putString("sta_ssid", buffer);
-    }
 
-    // Fetch a value from a key which is present
-    if (ini.getValue("wifi", "sta_password", buffer, bufferLen)) {
-      log_i("wifi sta_password: %s",buffer);
-      prefs.putString("sta_password", buffer);
-    }
-
-    // Fetch a value from a key which is present
-    if (ini.getValue("wifi", "ap_ssid", buffer, bufferLen)) {
-      log_i("wifi ap_ssid: %s",buffer);
-      prefs.putString("ap_ssid", buffer);
-    }
-
-    // Fetch a value from a key which is present
-    if (ini.getValue("wifi", "ap_password", buffer, bufferLen)) {
-      log_i("wifi ap_password: %s",buffer);
-      prefs.putString("ap_password", buffer);
-    }
-
-    // Fetch a value from a key which is present
-    if (ini.getValue("wifi", "hostname", buffer, bufferLen)) {
-      log_i("wifi hostname: %s",buffer);
-      prefs.putString("hostname", buffer);
-    }
-
-    // Fetch a value from a key which is present
-    if (ini.getValue("wifi", "ip", buffer, bufferLen)) {
-      log_i("wifi ip: %s",buffer);
-      prefs.putString("ip", buffer);
-    }
-
-    // Fetch a value from a key which is present
-    if (ini.getValue("wifi", "gateway", buffer, bufferLen)) {
-      log_i("wifi gateway: %s",buffer);
-      prefs.putString("gateway", buffer);
-    }
-
-    // Fetch a value from a key which is present
-    if (ini.getValue("wifi", "mask", buffer, bufferLen)) {
-      log_i("wifi mask: %s",buffer);
-      prefs.putString("mask", buffer);
-    }
-
-    // Fetch a value from a key which is present
-    if (ini.getValue("wifi", "pdns", buffer, bufferLen)) {
-      log_i("wifi pdns: %s",buffer);
-      prefs.putString("pdns", buffer);
-    }
-
-    // Fetch a value from a key which is present
-    if (ini.getValue("wifi", "sdns", buffer, bufferLen)) {
-      log_i("wifi sdns: %s",buffer);
-      prefs.putString("sdns", buffer);
+    for (int i = 0; i < sizeof(cfgparams) / sizeof(cfgparams[0]); i++)
+    {
+       const char * txt = cfgparams[i];
+      if (ini.getValue(PREF_NS, txt, buffer, bufferLen)) {
+          log_i("%s %s: %s", PREF_NS, txt, buffer);
+          prefs.putString("txt", buffer);
+      }
     }
 
     prefs.end();
