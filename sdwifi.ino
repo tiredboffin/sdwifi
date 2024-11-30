@@ -60,12 +60,12 @@ static unsigned umount_counter = 0;
 
 enum
 {
-  MOUNT_OK,
-  MOUNT_BUSY,
-  MOUNT_FAILED,
-  FILE_NOT_FOUND,
-  FILE_OPEN_FAILED,
-  INI_INVALID,
+  NOERROR,
+  ERROR_MOUNT_BUSY,
+  ERROR_MOUNT_FAILED,
+  ERROR_FILE_NOT_FOUND,
+  ERROR_FILE_OPEN_FAILED,
+  ERROR_INI_INVALID,
 };
 
 WebServer server(80);
@@ -361,7 +361,7 @@ static int mountSD(void)
   if (fs_is_mounted)
   {
     log_e("Double mount: ignore");
-    return MOUNT_OK;
+    return NOERROR;
   }
 
   log_i("SD Card mount: %u", mount_counter);
@@ -371,7 +371,7 @@ static int mountSD(void)
   if (!sd_state.mount_is_safe)
   {
     log_i("SD Card mount: card is busy");
-    return MOUNT_BUSY;
+    return ERROR_MOUNT_BUSY;
   }
 
   /* get control over flash NAND */
@@ -384,10 +384,10 @@ static int mountSD(void)
   {
     sd_unlock();
     log_i("SD Card mount: %u", mount_counter);
-    return MOUNT_FAILED;
+    return ERROR_MOUNT_FAILED;
   }
   fs_is_mounted = true;
-  return MOUNT_OK;
+  return NOERROR;
 }
 
 /* Unmount SD card */
@@ -449,10 +449,10 @@ int loadConfigIni(void)
 int loadConfigIni(const char *filename)
 {
 
-  if (mountSD() != MOUNT_OK)
+  if (mountSD() != NOERROR)
   {
     log_w("mount failed");
-    return MOUNT_FAILED;
+    return ERROR_MOUNT_FAILED;
   }
 
   int err = 0;
@@ -463,17 +463,17 @@ int loadConfigIni(const char *filename)
   if (!fileSystem.exists(filename))
   {
     log_i("File %s not found", filename);
-    err = FILE_NOT_FOUND;
+    err = ERROR_FILE_NOT_FOUND;
   }
   else if (!ini.open())
   {
     log_e("Failed to open file %s", filename);
-    err = FILE_OPEN_FAILED;
+    err = ERROR_FILE_OPEN_FAILED;
   }
   else if (!ini.validate(buffer, bufferLen))
   { // Check the file is valid. This can be used to warn if any lines are longer than the buffer.
     log_e("ini file %s not valid: %d", ini.getFilename(), ini.getError());
-    err = INI_INVALID;
+    err = ERROR_INI_INVALID;
   }
 
   if (err)
@@ -526,7 +526,7 @@ void handleInfo(void)
   {
     switch (mountSD())
     {
-    case MOUNT_OK:
+    case NOERROR:
       /* Requests for total/used bytes take too long depending on the number and size of files on the card. */
       uint64_t card_size, total_bytes, used_bytes;
 #ifdef USE_SD
@@ -547,7 +547,7 @@ void handleInfo(void)
       txt += used_bytes;
       umountSD();
       break;
-    case MOUNT_BUSY:
+    case ERROR_MOUNT_BUSY:
       txt += "\"status\":\"busy\"";
       break;
     default:
@@ -657,9 +657,9 @@ void handleConfig(void)
   {
     String v = server.arg(0);
     v = "/" + v;
-    bool ok = loadConfigIni(v.c_str());
+    int err = loadConfigIni(v.c_str());
 
-    if (ok)
+    if (err == NOERROR)
       httpOK();
     else
       httpNotFound();
@@ -896,7 +896,7 @@ void handleList()
 
   String txt;
 
-  if (mountSD() != MOUNT_OK)
+  if (mountSD() != NOERROR)
   {
     httpServiceUnavailable("LIST:SDBUSY");
     return;
@@ -990,7 +990,7 @@ void handleDownload(void)
   if (path[0] != '/')
     path = "/" + path;
 
-  if (mountSD() != MOUNT_OK)
+  if (mountSD() != NOERROR)
   {
     httpServiceUnavailable("DOWNLOAD:SDBUSY");
     return;
@@ -1056,7 +1056,7 @@ void handleRename()
     return;
   }
 
-  if (mountSD() != MOUNT_OK)
+  if (mountSD() != NOERROR)
   {
     httpServiceUnavailable("RENAME:SDBUSY");
     return;
@@ -1086,7 +1086,7 @@ void handleRemove()
     return;
   }
 
-  if (mountSD() != MOUNT_OK)
+  if (mountSD() != NOERROR)
   {
     httpServiceUnavailable("DELETE:SDBUSY");
     return;
@@ -1118,7 +1118,7 @@ void handleSha1()
     return;
   }
 
-  if (mountSD() != MOUNT_OK)
+  if (mountSD() != NOERROR)
   {
     httpServiceUnavailable("SHA1:SDBUSY");
     return;
@@ -1217,7 +1217,7 @@ void handleUploadProcessPUT()
 
   if (reqState.status == RAW_START)
   {
-    if (mountSD() != MOUNT_OK)
+    if (mountSD() != NOERROR)
     {
       httpServiceUnavailable("UPLOAD:SDBUSY");
       return;
@@ -1277,7 +1277,7 @@ void handleMkdir()
     return;
   }
 
-  if (mountSD() != MOUNT_OK)
+  if (mountSD() != NOERROR)
   {
     httpServiceUnavailable("MKDIR:SDBUSY");
     return;
@@ -1310,7 +1310,7 @@ void handleRmdir()
     return;
   }
 
-  if (mountSD() != MOUNT_OK)
+  if (mountSD() != NOERROR)
   {
     httpServiceUnavailable("RMDIR:SDBUSY");
     return;
@@ -1368,7 +1368,7 @@ void handleUploadProcess()
 
   if (reqState.status == UPLOAD_FILE_START)
   {
-    if (mountSD() != MOUNT_OK)
+    if (mountSD() != NOERROR)
     {
 
       httpServiceUnavailable("UPLOAD:SDBUSY");
