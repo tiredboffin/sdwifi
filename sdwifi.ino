@@ -79,7 +79,7 @@ fs::FS &fileSystem = SD_MMC;
 
 volatile struct
 {
-  bool mount_is_safe = false;
+  bool mount_is_safe = true;
   bool activity_detected = false;
   bool host_activity_detected = false;
   unsigned isr_counter = 0;
@@ -103,6 +103,11 @@ void setup(void)
   #ifdef USE_SD
   pinMode(SD_POWER_PIN, OUTPUT);
   #endif
+  /* check for config file on sd, if found get its values and remove it */
+  configWifi();
+
+  sd_state.mount_is_safe = false;
+
   attachInterrupt(CS_SENSE_PIN, sd_isr, CHANGE);
 
   /* Make SD card available to the Host early in the process */
@@ -154,9 +159,6 @@ void monitor_sd(void)
 void loop(void)
 {
   monitor_sd();
-
-  /* check for config file on sd, if found get its values and remove it */
-  configWifi();
 
   /* handle one client at a time */
   server.handleClient();
