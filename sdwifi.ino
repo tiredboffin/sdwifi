@@ -486,10 +486,14 @@ try
     }
 
     prefs.end();
+    ini.close();
     log_i("remove config file: %s",filename);
     fileSystem.remove(filename);
-    log_i("restart!");
+    umountSD();
     ESP.restart();
+    //should never get here
+    log_e("esp restart failed");
+    for (;;) ;
   }
   catch(...)
   {
