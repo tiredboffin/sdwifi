@@ -104,7 +104,7 @@ void setup(void)
   pinMode(SD_POWER_PIN, OUTPUT);
   #endif
   /* check for config file on sd, if found get its values and remove it */
-  configWifi();
+  loadConfigIni();
 
   sd_state.mount_is_safe = false;
 
@@ -437,7 +437,7 @@ static String getInterfaceMacAddress(esp_mac_type_t interface)
 static bool iniNotFound=false;
 
 /* try to config wifi from sd file */
-void configWifi(void)
+void loadConfigIni(void)
 {
   char* filename = "/sdwifi_config.ini";
 
@@ -506,7 +506,7 @@ try
 
 void handleConfigWifi(void)
 {
-  configWifi();
+  loadConfigIni();
   httpOK();
 }
 
