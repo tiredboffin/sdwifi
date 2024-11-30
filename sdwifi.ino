@@ -177,14 +177,20 @@ void loop(void)
 }
 void setupWiFi()
 {
+
   prefs.begin(PREF_NS, PREF_RO_MODE);
+
+  String hostname = prefs.isKey("hostname") ? prefs.getString("hostname") : default_name;
+
+  WiFi.hostname(hostname);
+
   /* assume STA mode if sta_ssid is defined */
   if (prefs.isKey("sta_ssid") && setupSTA())
   {
-    String hostname = prefs.isKey("hostname") ? prefs.getString("hostname") : default_name;
-    if (!MDNS.begin(hostname))
-    {
+    if (!MDNS.begin(hostname)) {
       log_e("Error setting up MDNS responder");
+    } else {
+      log_i("Set MDNS service name to %s", hostname);
     }
   }
   else
@@ -438,9 +444,9 @@ void configWifi(void)
   if(iniNotFound)
     return;
 
-  log_i("configWifi");
   if (mountSD() != MOUNT_OK)
   {
+    log_w("configWifi mount failed");
     return;
   }
 
@@ -455,7 +461,7 @@ try
       log_e("Failed to open file %s",filename);
       throw -1;
     }
-    log_i("Ini file %s exists",filename);
+    log_i("Ini file %s",filename);
 
     const size_t bufferLen = 80;
     char buffer[bufferLen];
@@ -602,11 +608,7 @@ void handleInfo(void)
   txt += WiFi.gatewayIP().toString();
   txt += "\",";
   txt += "\"Hostname\":\"";
-  txt += MDNS.hostname(0);
-  txt += "/";
-  prefs.begin(PREF_NS, PREF_RO_MODE);
-  txt += prefs.getString("hostname");
-  prefs.end();
+  txt += WiFi.getHostname();
   txt += "\",";
   txt += "\"DNS\":[\"";
   txt += WiFi.dnsIP(0).toString();
