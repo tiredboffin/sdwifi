@@ -8,7 +8,7 @@
 
 #define MIN_MEM_THRESHOLD 32768
 
-//#define USE_SD 
+// #define USE_SD
 
 #include <WiFi.h>
 #include <WiFiClient.h>
@@ -18,12 +18,12 @@
 #ifdef USE_SD
 #include <SPI.h>
 #include <SD.h>
-#define SD_CS_PIN		  13
-#define SD_MISO_PIN		 2
-#define SD_MOSI_PIN		15
-#define SD_SCLK_PIN		14
+#define SD_CS_PIN 13
+#define SD_MISO_PIN 2
+#define SD_MOSI_PIN 15
+#define SD_SCLK_PIN 14
 #else
-  #include <SD_MMC.h>
+#include <SD_MMC.h>
 #endif
 #include <Preferences.h>
 #include <mbedtls/sha1.h>
@@ -62,7 +62,10 @@ enum
 {
   MOUNT_OK,
   MOUNT_BUSY,
-  MOUNT_FAILED
+  MOUNT_FAILED,
+  FILE_NOT_FOUND,
+  FILE_OPEN_FAILED,
+  INI_INVALID,
 };
 
 WebServer server(80);
@@ -88,13 +91,12 @@ volatile struct
 
 static bool esp32_controls_sd = false;
 static bool fs_is_mounted = false;
-static bool loadConfigIniDone=false;
-
 
 void IRAM_ATTR sd_isr(void);
 
-void debug_meminfo(char *txt, unsigned count) {
-    log_e("%s, %u, %u, %u", txt, count, heap_caps_get_free_size(MALLOC_CAP_DEFAULT), heap_caps_get_minimum_free_size(MALLOC_CAP_DEFAULT));
+void debug_meminfo(char *txt, unsigned count)
+{
+  log_e("%s, %u, %u, %u", txt, count, heap_caps_get_free_size(MALLOC_CAP_DEFAULT), heap_caps_get_minimum_free_size(MALLOC_CAP_DEFAULT));
 }
 
 void setup(void)
@@ -102,11 +104,11 @@ void setup(void)
   sd_state.host_last_activity_millis = millis();
 
   pinMode(SD_SWITCH_PIN, OUTPUT);
-  #ifdef USE_SD
+#ifdef USE_SD
   pinMode(SD_POWER_PIN, OUTPUT);
-  #endif
+#endif
   /* check for config file on sd, if found get its values and remove it */
-  loadConfigIni();
+  (void)loadConfigIni();
 
   sd_state.mount_is_safe = false;
 
@@ -164,18 +166,17 @@ void loop(void)
 
   /* handle one client at a time */
   server.handleClient();
-  
+
   /* warn and reboot on low memory */
-  if (!mem_warning && heap_caps_get_minimum_free_size(MALLOC_CAP_DEFAULT) < MIN_MEM_THRESHOLD*2)
+  if (!mem_warning && heap_caps_get_minimum_free_size(MALLOC_CAP_DEFAULT) < MIN_MEM_THRESHOLD * 2)
   {
-      debug_meminfo("low mem", ++mem_warning);
+    debug_meminfo("low mem", ++mem_warning);
   }
   if (mem_warning && heap_caps_get_minimum_free_size(MALLOC_CAP_DEFAULT) < MIN_MEM_THRESHOLD)
   {
-      debug_meminfo("crtical mem", ++mem_warning);
-      ESP.restart();
+    debug_meminfo("crtical mem", ++mem_warning);
+    ESP.restart();
   }
-
 }
 void setupWiFi()
 {
@@ -189,9 +190,12 @@ void setupWiFi()
   /* assume STA mode if sta_ssid is defined */
   if (prefs.isKey("sta_ssid") && setupSTA())
   {
-    if (!MDNS.begin(hostname)) {
+    if (!MDNS.begin(hostname))
+    {
       log_e("Error setting up MDNS responder");
-    } else {
+    }
+    else
+    {
       log_i("Set MDNS service name to %s", hostname);
     }
   }
@@ -231,16 +235,15 @@ void setupWebServer()
   server.on("/wificonnect", HTTP_POST, handleWiFiConnect);
   server.on("/wifiap", HTTP_POST, handleWiFiAP);
   server.on("/delete", handleRemove);
-  server.on("/configWifi",handleConfigWifi);
 
   /* Static content */
   server.serveStatic("/", SPIFFS, "/");
-  server.onNotFound([]() {
+  server.onNotFound([]()
+                    {
     switch(server.method()) {
       case HTTP_OPTIONS: httpOK(); break;
       default: httpNotFound(); break;
-    }
-  });
+    } });
 
   log_i("HTTP server started");
 }
@@ -248,9 +251,17 @@ void setupWebServer()
 static bool setupAP(void)
 {
   String ssid = prefs.isKey("ap_ssid") ? prefs.getString("ap_ssid") : default_name;
-  String password = prefs.getString("ap_password");
+  String password = prefs.isKey("ap_password") ? prefs.getString("ap_password") : default_name;
 
   WiFi.mode(WIFI_AP);
+
+  if (prefs.isKey("ip"))
+  {
+    IPAddress ip, mask;
+    ip.fromString(prefs.getString("ip"));
+    mask.fromString(prefs.getString("mask"));
+    WiFi.softAPConfig(ip, ip, mask);
+  }
 
   if (!WiFi.softAP(ssid, password))
   {
@@ -258,21 +269,15 @@ static bool setupAP(void)
     delay(100);
     if (!WiFi.softAP(ssid))
     {
-      log_e("Fallback to default AP name %s", default_name);
+      log_e("Fallback to default AP name %s and ip address", default_name);
       delay(100);
+      WiFi.softAPConfig(IPAddress(192, 168, 4, 1), IPAddress(192, 168, 4, 1), IPAddress(255, 255, 255, 0));
       if (!WiFi.softAP(default_name))
       {
         log_e("Soft AP creation failed");
         return false;
       }
     }
-  }
-
-  IPAddress ip,mask;
-  if(ip.fromString(prefs.getString("ip")))
-  {
-    mask.fromString(prefs.getString("mask"));
-    WiFi.softAPConfig(ip,ip,mask);
   }
 
   log_i("Soft AP created: %s", WiFi.softAPSSID());
@@ -282,19 +287,18 @@ static bool setupAP(void)
 static bool setupSTA(void)
 {
   String ssid = prefs.getString("sta_ssid");
-  String password = prefs.getString("sta_password");
-  IPAddress ip,mask,gateway,pdns,sdns;
-
-  int i = 0;
+  String password = prefs.isKey("sta_password") ? prefs.getString("sta_password") : "";
 
   WiFi.mode(WIFI_STA);
-  if(ip.fromString(prefs.getString("ip")))
+
+  if (prefs.isKey("ip"))
   {
-    mask.fromString(prefs.getString("mask"));
+    IPAddress ip, dns, gateway, subnet;
+    ip.fromString(prefs.getString("ip"));
+    dns.fromString(prefs.getString("dns"));
     gateway.fromString(prefs.getString("gateway"));
-    pdns.fromString(prefs.getString("pdns"));
-    sdns.fromString(prefs.getString("sdns"));
-    WiFi.config(ip,gateway,mask,pdns,sdns);
+    subnet.fromString(prefs.getString("mask"));
+    WiFi.config(ip, dns, gateway, subnet);
   }
 
   WiFi.begin(ssid, password);
@@ -307,7 +311,7 @@ static bool setupSTA(void)
   }
   else
   {
-    log_e("Connection to %s failed with status %d after %d attempts", ssid, WiFi.status(), i);
+    log_e("Connection to %s failed with status %d", ssid, WiFi.status());
     return false;
   }
 }
@@ -323,7 +327,7 @@ static inline void sd_lock(void)
   {
     digitalWrite(SD_SWITCH_PIN, LOW);
 #ifdef USE_SD
-    SPI.begin(SD_SCLK_PIN,SD_MISO_PIN,SD_MOSI_PIN,SD_CS_PIN);
+    SPI.begin(SD_SCLK_PIN, SD_MISO_PIN, SD_MOSI_PIN, SD_CS_PIN);
 #endif
   }
 }
@@ -332,21 +336,21 @@ static inline void sd_unlock(void)
 {
   if (!esp32_controls_sd)
   {
- #ifdef USE_SD
-    #define SD_D0_PIN		   2
-    #define SD_D1_PIN		   4
-    #define SD_D2_PIN		  12
-    #define SD_D3_PIN		  13
-    #define SD_CLK_PIN	  14
-    #define SD_CMD_PIN    15
-    pinMode(SD_D0_PIN,  INPUT_PULLUP);
-    pinMode(SD_D1_PIN,  INPUT_PULLUP);
-    pinMode(SD_D2_PIN,  INPUT_PULLUP);
-    pinMode(SD_D3_PIN,  INPUT_PULLUP);
+#ifdef USE_SD
+#define SD_D0_PIN 2
+#define SD_D1_PIN 4
+#define SD_D2_PIN 12
+#define SD_D3_PIN 13
+#define SD_CLK_PIN 14
+#define SD_CMD_PIN 15
+    pinMode(SD_D0_PIN, INPUT_PULLUP);
+    pinMode(SD_D1_PIN, INPUT_PULLUP);
+    pinMode(SD_D2_PIN, INPUT_PULLUP);
+    pinMode(SD_D3_PIN, INPUT_PULLUP);
     pinMode(SD_CLK_PIN, INPUT_PULLUP);
     pinMode(SD_CMD_PIN, INPUT_PULLUP);
     SPI.end();
- #endif
+#endif
     digitalWrite(SD_SWITCH_PIN, HIGH);
   }
 }
@@ -372,11 +376,11 @@ static int mountSD(void)
 
   /* get control over flash NAND */
   sd_lock();
-  #ifdef USE_SD
+#ifdef USE_SD
   if (!SD.begin(SD_CS_PIN))
-  #else
+#else
   if (!SD_MMC.begin())
-  #endif
+#endif
   {
     sd_unlock();
     log_i("SD Card mount: %u", mount_counter);
@@ -405,10 +409,9 @@ static void umountSD(void)
   ++umount_counter;
   fs_is_mounted = false;
 }
-//wifi config parameters recognized in config?param=value and in sdwifi_config.ini file
+// wifi config parameters recognized in config?param=value and in sdwifi_config.ini file
 static const char *cfgparams[] = {
-      "sta_ssid", "sta_password", "ap_ssid", "ap_password", "hostname", "ip", "gateway", "mask", "pdns", "sdns"
-       };
+    "sta_ssid", "sta_password", "ap_ssid", "ap_password", "hostname", "ip", "gateway", "mask", "dns"};
 
 static bool cfgparamVerify(const char *n)
 {
@@ -436,80 +439,75 @@ static String getInterfaceMacAddress(esp_mac_type_t interface)
   return mac;
 }
 
-/* try to config wifi from sd file */
-void loadConfigIni(void)
-{
-  char* filename = "/sdwifi_config.ini";
+/* load configuration parameters from config.ini file if it is present on sd card */
 
-  if(loadConfigIniDone)
-    return;
+int loadConfigIni(void)
+{
+  return loadConfigIni("/sdwifi_config.ini");
+}
+
+int loadConfigIni(const char *filename)
+{
 
   if (mountSD() != MOUNT_OK)
   {
-    log_w("configWifi mount failed");
-    return;
+    log_w("mount failed");
+    return MOUNT_FAILED;
   }
 
-try
+  int err = 0;
+  IniFile ini(filename);
+  const size_t bufferLen = 80;
+  char buffer[bufferLen];
+
+  if (!fileSystem.exists(filename))
   {
-    if (!fileSystem.exists(filename)) {
-      log_i("Ini file %s does not exist",filename);
-      throw -1;
-    }
-    IniFile ini(filename);
-    if (!ini.open()) {
-      log_e("Failed to open file %s",filename);
-      throw -1;
-    }
-    log_i("Ini file %s",filename);
+    log_i("File %s not found", filename);
+    err = FILE_NOT_FOUND;
+  }
+  else if (!ini.open())
+  {
+    log_e("Failed to open file %s", filename);
+    err = FILE_OPEN_FAILED;
+  }
+  else if (!ini.validate(buffer, bufferLen))
+  { // Check the file is valid. This can be used to warn if any lines are longer than the buffer.
+    log_e("ini file %s not valid: %d", ini.getFilename(), ini.getError());
+    err = INI_INVALID;
+  }
 
-    const size_t bufferLen = 80;
-    char buffer[bufferLen];
-
-    // Check the file is valid. This can be used to warn if any lines
-    // are longer than the buffer.
-    if (!ini.validate(buffer, bufferLen)) {
-      log_e("ini file %s not valid: %d",ini.getFilename(),ini.getError());
-      throw -2;
-    }
-    
-    prefs.begin(PREF_NS, PREF_RW_MODE);
-    prefs.clear();
-
-    for (int i = 0; i < sizeof(cfgparams) / sizeof(cfgparams[0]); i++)
-    {
-       const char * txt = cfgparams[i];
-      if (ini.getValue(PREF_NS, txt, buffer, bufferLen)) {
-          log_i("%s %s: %s", PREF_NS, txt, buffer);
-          prefs.putString("txt", buffer);
-      }
-    }
-
-    prefs.end();
-    ini.close();
-    log_i("remove config file: %s",filename);
-    fileSystem.remove(filename);
+  if (err)
+  {
     umountSD();
-    ESP.restart();
-    //should never get here
-    log_e("esp restart failed");
-    for (;;) ;
+    return err;
   }
-  catch(...)
+
+  log_i("Ini file %s", filename);
+
+  prefs.begin(PREF_NS, PREF_RW_MODE);
+  prefs.clear();
+
+  for (int i = 0; i < sizeof(cfgparams) / sizeof(cfgparams[0]); i++)
   {
-
+    const char *str = cfgparams[i];
+    if (ini.getValue(PREF_NS, str, buffer, bufferLen))
+    {
+      log_i("%s %s: %s", PREF_NS, str, buffer);
+      prefs.putString(str, buffer);
+    }
   }
-
+  prefs.end();
+  ini.close();
+  log_i("remove config file: %s", filename);
+  fileSystem.remove(filename);
   umountSD();
-  loadConfigIniDone=true;
+  ESP.restart();
+  // should never get here
+  log_e("esp restart failed");
+  for (;;)
+    ;
+  return -1;
 }
-
-void handleConfigWifi(void)
-{
-  loadConfigIni();
-  httpOK();
-}
-
 
 /* CMD: Return some info */
 void handleInfo(void)
@@ -520,13 +518,16 @@ void handleInfo(void)
   uint8_t tmp[6];
 
   txt = "{\"info\":{\"filesystem\":{";
-  if (server.hasArg("sd") && server.arg("sd") == "none") {
-      txt += "\"status\":\"info disabled\"";
-  } else {
+  if (server.hasArg("sd") && server.arg("sd") == "none")
+  {
+    txt += "\"status\":\"info disabled\"";
+  }
+  else
+  {
     switch (mountSD())
     {
     case MOUNT_OK:
-        /* Requests for total/used bytes take too long depending on the number and size of files on the card. */
+      /* Requests for total/used bytes take too long depending on the number and size of files on the card. */
       uint64_t card_size, total_bytes, used_bytes;
 #ifdef USE_SD
       card_size = SD.cardSize();
@@ -573,7 +574,7 @@ void handleInfo(void)
   txt += "\"board\":\"";
   txt += ARDUINO_BOARD;
   txt += "\",";
-  txt +=  "\"esp-idf\":\"";
+  txt += "\"esp-idf\":\"";
   txt += esp_get_idf_version();
   txt += "\"";
   txt += "},";
@@ -593,9 +594,14 @@ void handleInfo(void)
   txt += "\"reset_reason\":";
   txt += esp_reset_reason();
   txt += "},";
+
+  int wifiMode = WiFi.getMode();
   txt += "\"network\":{";
+  txt += "\"Mode\":\"";
+  txt += (wifiMode == WIFI_MODE_AP) ? "AP" : "STA";
+  txt += "\",";
   txt += "\"SSID\":\"";
-  txt += WiFi.SSID();
+  txt += (wifiMode == WIFI_MODE_AP) ? WiFi.softAPSSID() : WiFi.SSID();
   txt += "\",";
   txt += "\"WifiStatus\":\"";
   txt += WiFi.status();
@@ -604,9 +610,9 @@ void handleInfo(void)
   txt += WiFi.RSSI();
   txt += " dBm\",";
   txt += "\"IP\":\"";
-  txt += WiFi.localIP().toString();
+  txt += (wifiMode == WIFI_MODE_AP) ? WiFi.softAPIP().toString() : WiFi.localIP().toString();
   txt += "/";
-  txt += WiFi.subnetMask().toString();
+  txt += (wifiMode == WIFI_MODE_AP) ? WiFi.softAPSubnetMask().toString() : WiFi.subnetMask().toString();
   txt += "\",";
   txt += "\"Gateway\":\"";
   txt += WiFi.gatewayIP().toString();
@@ -631,7 +637,6 @@ void handleInfo(void)
   server.send(200, "application/json", txt);
 }
 
-
 /* CMD: Update configuration parameters */
 void handleConfig(void)
 {
@@ -639,13 +644,27 @@ void handleConfig(void)
   String txt;
   if (server.args() == 0)
   {
-    txt = "Configuration parameters:\n\n";
+    txt = "Supported configuration parameters:\n\n";
     for (int i = 0; i < sizeof(cfgparams) / sizeof(cfgparams[0]); i++)
     {
       txt += cfgparams[i];
       txt += "\n";
     }
     httpOK(txt);
+  }
+
+  if (server.args() == 1 && server.argName(0) == "load")
+  {
+    String v = server.arg(0);
+    v = "/" + v;
+    bool ok = loadConfigIni(v.c_str());
+
+    if (ok)
+      httpOK();
+    else
+      httpNotFound();
+
+    return;
   }
 
   prefs.begin(PREF_NS, PREF_RW_MODE);
@@ -736,7 +755,8 @@ void handleExperimental(void)
     {
       if (v == "esp32" || v == "low")
       {
-        if (!esp32_controls_sd) {
+        if (!esp32_controls_sd)
+        {
           sd_lock();
           esp32_controls_sd = true;
         }
@@ -744,7 +764,8 @@ void handleExperimental(void)
       }
       else if (v == "host" || v == "high")
       {
-        if (esp32_controls_sd) {
+        if (esp32_controls_sd)
+        {
           esp32_controls_sd = false;
           sd_unlock();
         }
@@ -843,7 +864,7 @@ void get_sfn(char *out_sfn, File *file)
   FILINFO info;
   f_stat(file->path(), &info);
   strncpy(out_sfn, info.altname, FF_SFN_BUF + 1);
-#else /* FF_USE_LFN */
+#else  /* FF_USE_LFN */
   strncpy(out_sfn, file->name().c_str(), FF_SFN_BUF + 1);
 #endif /* FF_USE_LFN */
 }
@@ -1297,18 +1318,27 @@ void handleRmdir()
 
   String path = server.arg("path");
 
-  if (path[0] != '/') {
+  if (path[0] != '/')
+  {
     path = "/" + path;
   }
   /* Trying to delete root */
-  if (path.length() < 2) {
-     httpInvalidRequest("RMDIR:BADARGS");
-  } else if (!fileSystem.exists(path)) {
+  if (path.length() < 2)
+  {
+    httpInvalidRequest("RMDIR:BADARGS");
+  }
+  else if (!fileSystem.exists(path))
+  {
     httpNotFound();
-  } else {
-    if (!fileSystem.rmdir(path)) {
+  }
+  else
+  {
+    if (!fileSystem.rmdir(path))
+    {
       httpInternalError();
-    } else {
+    }
+    else
+    {
       httpOK();
     }
   }
