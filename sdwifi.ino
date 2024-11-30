@@ -601,7 +601,7 @@ void handleInfo(void)
   txt += "\"Gateway\":\"";
   txt += WiFi.gatewayIP().toString();
   txt += "\",";
-  txt += "\"Hostanme\":\"";
+  txt += "\"Hostname\":\"";
   txt += MDNS.hostname(0);
   txt += "/";
   prefs.begin(PREF_NS, PREF_RO_MODE);
