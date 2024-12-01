@@ -54,6 +54,8 @@ static unsigned umount_counter = 0;
 #define PREF_RO_MODE true
 #define PREF_NS "wifi"
 
+#define SDWIFI_INI_FILENAME "/sdwifi_config.ini"
+
 #define WIFI_STA_TIMEOUT 5000
 
 #define HOST_ACTIVITY_GRACE_PERIOD_MILLIS 2000
@@ -108,7 +110,8 @@ void setup(void)
   pinMode(SD_POWER_PIN, OUTPUT);
 #endif
   /* check for config file on sd, if found get its values and remove it */
-  (void)loadConfigIni();
+  (void)loadConfigIni(SDWIFI_INI_FILENAME, true);
+
 
   sd_state.mount_is_safe = false;
 
@@ -440,12 +443,6 @@ static String getInterfaceMacAddress(esp_mac_type_t interface)
 }
 
 /* load configuration parameters from config.ini file if it is present on sd card */
-
-int loadConfigIni(void)
-{
-  return loadConfigIni("/sdwifi_config.ini", true);
-}
-
 int loadConfigIni(const char *filename, bool removeFile)
 {
 
