@@ -1,6 +1,6 @@
 #!/bin/sh
 FQBN=esp32:esp32:pico32:PartitionScheme=no_ota,DebugLevel=info
-PORT=/dev/ttyUSB1
+PORT=/dev/ttyUSB0
 PORTM=/dev/ttyUSB1
 CLEAN=--clean
 
