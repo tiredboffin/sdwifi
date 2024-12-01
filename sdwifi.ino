@@ -443,10 +443,10 @@ static String getInterfaceMacAddress(esp_mac_type_t interface)
 
 int loadConfigIni(void)
 {
-  return loadConfigIni("/sdwifi_config.ini");
+  return loadConfigIni("/sdwifi_config.ini", true);
 }
 
-int loadConfigIni(const char *filename)
+int loadConfigIni(const char *filename, bool removeFile)
 {
 
   if (mountSD() != NOERROR)
@@ -498,8 +498,10 @@ int loadConfigIni(const char *filename)
   }
   prefs.end();
   ini.close();
-  log_i("remove config file: %s", filename);
-  fileSystem.remove(filename);
+  if (removeFile) {
+    log_i("remove config file: %s", filename);
+    fileSystem.remove(filename);
+  }
   umountSD();
   ESP.restart();
   // should never get here
@@ -657,7 +659,7 @@ void handleConfig(void)
   {
     String v = server.arg(0);
     v = "/" + v;
-    int err = loadConfigIni(v.c_str());
+    int err = loadConfigIni(v.c_str(), false);
 
     if (err == NOERROR)
       httpOK();
