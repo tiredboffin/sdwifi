@@ -29,9 +29,25 @@ The code is based on standard Arduino/ESP32 sketches and the orginal FYSETC [fir
       [   118][I][sdwifi.ino:167] setupAP(): Soft AP created: sdwifi
       [   131][I][sdwifi.ino:140] setup(): HTTP server started
 
-## usage
+## configuration
 
-By default the server starts as unprotected Wifi Access Point with defaul name "sdwifi" and ip address 192.168.4.1. The AP name and AP password can be changed or the card can be configured to use Wifi STA mode.
+By default, the server starts as an unprotected WiFi Access Point with the default name "sdwifi" and IP address 192.168.4.1. Once connected to the access point, the WiFi mode ("access point" or "station"), SSID, password, and IP settings can be changed using the "config" command, for e.g.:
+
+    curl "http://192.168.4.1/confiig?ap_ssid=myssid&ap_password=mypassword"
+
+(see more example in the usage section). 
+
+Alternatively, sdwifi_config.ini file can eb prepared on a PC and placed in the root folder of the SD card. 
+
+Sample sdwifi_config.ini:
+```
+[WiFi]
+sta_ssid=<SSID>
+sta_password=<password>
+```
+Once the SD card is safely unmounted and reinserted, the server will automatically pick up the settings from the .ini file.
+
+## usage
 
 The server accepts the following commands:
 
