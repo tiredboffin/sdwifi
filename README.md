@@ -158,9 +158,10 @@ The server accepts the following commands:
 The server can also be used in a browser with the original [firmware](https://github.com/FYSETC/SdWiFiBrowser) web application.
 
 To build the filesystem with the web app:
-  - download the firmware source code
-  - copy ./data from the firmware directory into sdinfo/data 
-  - build sdinfo as described above and then execute
+  - download the SdWifiBroser firmware source code
+  - copy SDWifiBrowser/data directory into sdwifi/data
+  - execute
 
         ./fs build upload
+
 
