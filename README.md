@@ -8,7 +8,10 @@ The main use case for this project is my research on custom boot code for Fujifi
 
 While my use case is pretty specific, this server could still be useful in other simple scenarios—provided you can reasonably ensure the SD card isn't actively being used by the host (like a camera, printer, etc.) while the server is accessing it. Alternatively, it could work if the host can handle occasional SD card access errors gracefully.
 
-The code is based on standard Arduino/ESP32 sketches and the orginal FYSETC [firmware](https://github.com/FYSETC/SdWiFiBrowser). 
+The code is based on standard Arduino/ESP32 sketches and the orginal FYSETC [firmware](https://github.com/FYSETC/SdWiFiBrowser) and tested on FYSETC SD Wifi Pro card rev 1.1
+
+![image](https://github.com/user-attachments/assets/bac7d2be-150f-4b85-b5eb-42dadb482aca)
+
 
 ## build instructions
 
@@ -158,9 +161,10 @@ The server accepts the following commands:
 The server can also be used in a browser with the original [firmware](https://github.com/FYSETC/SdWiFiBrowser) web application.
 
 To build the filesystem with the web app:
-  - download the firmware source code
-  - copy ./data from the firmware directory into sdinfo/data 
-  - build sdinfo as described above and then execute
+  - download the SdWifiBroser firmware source code
+  - copy SDWifiBrowser/data directory into sdwifi/data
+  - execute
 
         ./fs build upload
+
 
