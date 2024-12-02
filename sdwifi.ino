@@ -798,7 +798,8 @@ void handleDownload(AsyncWebServerRequest *request)
     httpInvalidRequest(request, "DOWNLOAD:BADARGS");
     return;
   }
-  String path = request->arg("path");
+
+  String path = request->getParam("path")->value();
 
   if (path[0] != '/')
     path = "/" + path;
@@ -811,28 +812,51 @@ void handleDownload(AsyncWebServerRequest *request)
 
   if (fileSystem.exists(path))
   {
-    File dataFile = fileSystem.open(path, FILE_READ);
-    if (!dataFile)
+    request->_tempFile = fileSystem.open(path, FILE_READ);
+    if (!request->_tempFile)
     {
       httpServiceUnavailable(request, "Failed to open file");
     }
-    else if (dataFile.isDirectory())
+    else if (request->_tempFile.isDirectory())
     {
-      dataFile.close();
+      request->_tempFile.close();
       httpNotAllowed(request, "Path is a directory");
     }
     else
     {
-      dataFile.close();
-      AsyncWebServerResponse *response = request->beginResponse(fileSystem, path, "application/octet-stream");
+      log_i("Download request %s %lu bytes", path, request->_tempFile.size());
+      AsyncWebServerResponse *response = request->beginResponse("application/octet-stream", request->_tempFile.size(),
+        [request](uint8_t *buffer, size_t maxLen, size_t index) -> size_t
+        {
+          uint32_t readBytes;
+          uint32_t bytes = 0;
+          if (!request->_tempFile)
+          {
+            log_e("request->_tempFile is NULL in callback");
+            return 0;
+          }
+          uint32_t avaliableBytes = request->_tempFile.available();
+          if (avaliableBytes > maxLen)
+          {
+            bytes = request->_tempFile.readBytes((char *)buffer, maxLen);
+          }
+          else
+          {
+            bytes = request->_tempFile.readBytes((char *)buffer, avaliableBytes);
+            request->_tempFile.close();
+            umountSD();
+          }
+          return bytes;
+        });
       request->send(response);
+      log_i("download response sent");
     }
   }
   else
   {
     httpNotFound(request, "DOWNLOAD:FileNotFound");
+    umountSD();
   }
-  umountSD();
 }
 
 /* CMD Rename a file */
