@@ -4,11 +4,13 @@
  *  Based on a simple WebServer.
  */
 
-#define USE_NTP
-
 #ifdef ASYNCWEBSERVER_REGEX
 # define PUT_UPLOAD
 #endif
+
+#define MIN_MEM_THRESHOLD 32768
+
+// #define USE_SD
 
 #include <WiFi.h>
 #include <WiFiClient.h>
@@ -16,12 +18,22 @@
 #include <ESPAsyncWebServer.h>
 
 #include <ESPmDNS.h>
+#ifdef USE_SD
+#include <SPI.h>
+#include <SD.h>
+#define SD_CS_PIN 13
+#define SD_MISO_PIN 2
+#define SD_MOSI_PIN 15
+#define SD_SCLK_PIN 14
+#else
 #include <SD_MMC.h>
+#endif
 #include <Preferences.h>
 #include <mbedtls/sha1.h>
 #include <esp_mac.h>
 #include <SPIFFS.h>
 #include <time.h>
+#include "IniFile.h"
 
 #if defined __has_include
 # if __has_include(<mbedtls/compat-2.x.h>)
@@ -29,18 +41,10 @@
 # endif
 #endif
 
-#ifdef USE_NTP
-# ifdef CONFIG_LWIP_TCPIP_CORE_LOCKING
-#  include "lwip/tcpip.h" // for UN/LOCK_TCPIP_CORE()
-# endif /* CONFIG_LWIP_TCPIP_CORE_LOCKING */
-
-static const char* ntpServer = "pool.ntp.org";
-static const long  gmtOffset_sec = 0;
-static const int   daylightOffset_sec = 3600;
-
-#endif /* USE_NTP */
-
 static const char *default_name = "sdwifi";
+
+static unsigned mount_counter = 0;
+static unsigned umount_counter = 0;
 
 #define SD_SWITCH_PIN GPIO_NUM_26
 #define SD_POWER_PIN GPIO_NUM_27
@@ -50,25 +54,38 @@ static const char *default_name = "sdwifi";
 #define PREF_RO_MODE true
 #define PREF_NS "wifi"
 
+#define SDWIFI_INI_FILENAME "/sdwifi_config.ini"
+
 #define WIFI_STA_TIMEOUT 5000
 
 #define HOST_ACTIVITY_GRACE_PERIOD_MILLIS 2000
 
 enum
 {
-  MOUNT_OK,
-  MOUNT_BUSY,
-  MOUNT_FAILED
+  NOERROR,
+  ERROR_MOUNT_BUSY,
+  ERROR_MOUNT_FAILED,
+  ERROR_FILE_NOT_FOUND,
+  ERROR_FILE_OPEN_FAILED,
+  ERROR_INI_INVALID,
 };
 
 AsyncWebServer server(80);
 
 Preferences prefs;
+
+File dataFile;
+static int mem_warning;
+
+#ifdef USE_SD
+fs::FS &fileSystem = SD;
+#else
 fs::FS &fileSystem = SD_MMC;
+#endif
 
 volatile struct
 {
-  bool mount_is_safe = false;
+  bool mount_is_safe = true;
   bool activity_detected = false;
   bool host_activity_detected = false;
   unsigned isr_counter = 0;
@@ -80,11 +97,25 @@ static int fs_is_mounted = 0;
 
 void IRAM_ATTR sd_isr(void);
 
+void debug_meminfo(char *txt, unsigned count)
+{
+  log_e("%s, %u, %u, %u", txt, count, heap_caps_get_free_size(MALLOC_CAP_DEFAULT), heap_caps_get_minimum_free_size(MALLOC_CAP_DEFAULT));
+}
+
 void setup(void)
 {
   sd_state.host_last_activity_millis = millis();
 
   pinMode(SD_SWITCH_PIN, OUTPUT);
+#ifdef USE_SD
+  pinMode(SD_POWER_PIN, OUTPUT);
+#endif
+  /* check for config file on sd, if found get its values and remove it */
+  (void)loadConfigIni(SDWIFI_INI_FILENAME, true);
+
+
+  sd_state.mount_is_safe = false;
+
   attachInterrupt(CS_SENSE_PIN, sd_isr, CHANGE);
 
   /* Make SD card available to the Host early in the process */
@@ -95,21 +126,7 @@ void setup(void)
   SPIFFS.begin();
   setupWebServer();
   server.begin();
-
-#ifdef USE_NTP
-  // To use NTP, we have to lock ourselves the TCP core while operating
-  // https://github.com/espressif/arduino-esp32/issues/10526#issuecomment-2439483380
-# ifdef CONFIG_LWIP_TCPIP_CORE_LOCKING
-  if (!sys_thread_tcpip(LWIP_CORE_LOCK_QUERY_HOLDER))
-      LOCK_TCPIP_CORE();
-# endif /* CONFIG_LWIP_TCPIP_CORE_LOCKING */
-  // Send an NTP request to configure local time
-  configTime(gmtOffset_sec, daylightOffset_sec, ntpServer);
-# ifdef CONFIG_LWIP_TCPIP_CORE_LOCKING
-  if (sys_thread_tcpip(LWIP_CORE_LOCK_QUERY_HOLDER))
-      UNLOCK_TCPIP_CORE();
-# endif /* CONFIG_LWIP_TCPIP_CORE_LOCKING */
-#endif /* USE_NTP */
+  debug_meminfo("setup", 0);
 }
 
 void IRAM_ATTR sd_isr(void)
@@ -150,18 +167,37 @@ void monitor_sd(void)
 void loop(void)
 {
   monitor_sd();
-}
 
+  /* warn and reboot on low memory */
+  if (!mem_warning && heap_caps_get_minimum_free_size(MALLOC_CAP_DEFAULT) < MIN_MEM_THRESHOLD * 2)
+  {
+    debug_meminfo("low mem", ++mem_warning);
+  }
+  if (mem_warning && heap_caps_get_minimum_free_size(MALLOC_CAP_DEFAULT) < MIN_MEM_THRESHOLD)
+  {
+    debug_meminfo("crtical mem", ++mem_warning);
+    ESP.restart();
+  }
+}
 void setupWiFi()
 {
+
   prefs.begin(PREF_NS, PREF_RO_MODE);
+
+  String hostname = prefs.isKey("hostname") ? prefs.getString("hostname") : default_name;
+
+  WiFi.hostname(hostname);
+
   /* assume STA mode if sta_ssid is defined */
   if (prefs.isKey("sta_ssid") && setupSTA())
   {
-    String hostname = prefs.isKey("hostname") ? prefs.getString("hostname") : default_name;
     if (!MDNS.begin(hostname))
     {
       log_e("Error setting up MDNS responder");
+    }
+    else
+    {
+      log_i("Set MDNS service name to %s", hostname);
     }
   }
   else
@@ -221,9 +257,17 @@ void setupWebServer()
 static bool setupAP(void)
 {
   String ssid = prefs.isKey("ap_ssid") ? prefs.getString("ap_ssid") : default_name;
-  String password = prefs.getString("ap_password");
+  String password = prefs.isKey("ap_password") ? prefs.getString("ap_password") : default_name;
 
   WiFi.mode(WIFI_AP);
+
+  if (prefs.isKey("ip"))
+  {
+    IPAddress ip, mask;
+    ip.fromString(prefs.getString("ip"));
+    mask.fromString(prefs.getString("mask"));
+    WiFi.softAPConfig(ip, ip, mask);
+  }
 
   if (!WiFi.softAP(ssid, password))
   {
@@ -231,8 +275,9 @@ static bool setupAP(void)
     delay(100);
     if (!WiFi.softAP(ssid))
     {
-      log_e("Fallback to default AP name %s", default_name);
+      log_e("Fallback to default AP name %s and ip address", default_name);
       delay(100);
+      WiFi.softAPConfig(IPAddress(192, 168, 4, 1), IPAddress(192, 168, 4, 1), IPAddress(255, 255, 255, 0));
       if (!WiFi.softAP(default_name))
       {
         log_e("Soft AP creation failed");
@@ -240,6 +285,7 @@ static bool setupAP(void)
       }
     }
   }
+
   log_i("Soft AP created: %s", WiFi.softAPSSID());
   return true;
 }
@@ -247,10 +293,20 @@ static bool setupAP(void)
 static bool setupSTA(void)
 {
   String ssid = prefs.getString("sta_ssid");
-  String password = prefs.getString("sta_password");
-  int i = 0;
+  String password = prefs.isKey("sta_password") ? prefs.getString("sta_password") : "";
 
   WiFi.mode(WIFI_STA);
+
+  if (prefs.isKey("ip"))
+  {
+    IPAddress ip, dns, gateway, subnet;
+    ip.fromString(prefs.getString("ip"));
+    dns.fromString(prefs.getString("dns"));
+    gateway.fromString(prefs.getString("gateway"));
+    subnet.fromString(prefs.getString("mask"));
+    WiFi.config(ip, dns, gateway, subnet);
+  }
+
   WiFi.begin(ssid, password);
 
   WiFi.waitForConnectResult(WIFI_STA_TIMEOUT);
@@ -261,7 +317,7 @@ static bool setupSTA(void)
   }
   else
   {
-    log_e("Connection to %s failed with status %d after %d attempts", ssid, WiFi.status(), i);
+    log_e("Connection to %s failed with status %d", ssid, WiFi.status());
     return false;
   }
 }
@@ -276,6 +332,9 @@ static inline void sd_lock(void)
   if (!esp32_controls_sd)
   {
     digitalWrite(SD_SWITCH_PIN, LOW);
+#ifdef USE_SD
+    SPI.begin(SD_SCLK_PIN, SD_MISO_PIN, SD_MOSI_PIN, SD_CS_PIN);
+#endif
   }
 }
 
@@ -283,6 +342,21 @@ static inline void sd_unlock(void)
 {
   if (!esp32_controls_sd)
   {
+#ifdef USE_SD
+#define SD_D0_PIN 2
+#define SD_D1_PIN 4
+#define SD_D2_PIN 12
+#define SD_D3_PIN 13
+#define SD_CLK_PIN 14
+#define SD_CMD_PIN 15
+    pinMode(SD_D0_PIN, INPUT_PULLUP);
+    pinMode(SD_D1_PIN, INPUT_PULLUP);
+    pinMode(SD_D2_PIN, INPUT_PULLUP);
+    pinMode(SD_D3_PIN, INPUT_PULLUP);
+    pinMode(SD_CLK_PIN, INPUT_PULLUP);
+    pinMode(SD_CMD_PIN, INPUT_PULLUP);
+    SPI.end();
+#endif
     digitalWrite(SD_SWITCH_PIN, HIGH);
   }
 }
@@ -293,29 +367,32 @@ static int mountSD(void)
   if (fs_is_mounted > 0)
   {
     ++fs_is_mounted;
-    log_e("Double mount: ignore");
-    return MOUNT_OK;
+    log_e("Double mount ignored %u", mount_counter);
+    return NOERROR;
   }
-
-  log_i("SD Card mount");
 
   if (!sd_state.mount_is_safe)
   {
-    log_i("SD Card mount: card is busy");
-    return MOUNT_BUSY;
+    log_i("Card is busy: %u", mount_counter);
+    return ERROR_MOUNT_BUSY;
   }
 
   /* get control over flash NAND */
   sd_lock();
+#ifdef USE_SD
+  if (!SD.begin(SD_CS_PIN))
+#else
   if (!SD_MMC.begin())
+#endif
   {
-    log_e("SD Card Mount Failed");
     sd_unlock();
-    return MOUNT_FAILED;
+    log_i("Failed: %u", mount_counter);
+    return ERROR_MOUNT_FAILED;
   }
-
   ++fs_is_mounted;
-  return MOUNT_OK;
+  ++mount_counter;
+  log_i("Success: %u", mount_counter);
+  return NOERROR;
 }
 
 /* Unmount SD card */
@@ -323,18 +400,23 @@ static void umountSD(void)
 {
   if (fs_is_mounted > 1)
   {
-    log_e("Double Unmount: ignore");
+    log_e("Double unmount ignored %u", umount_counter);
     --fs_is_mounted;
     return;
   }
+#ifdef USE_SD
+  SD.end();
+#else
   SD_MMC.end();
+#endif
   sd_unlock();
   --fs_is_mounted;
-  log_i("In SD Card Unmount");
+  umount_counter++;
+  log_i("Success: %u", umount_counter);
 }
-
+// wifi config parameters recognized in config?param=value and in sdwifi_config.ini file
 static const char *cfgparams[] = {
-    "sta_ssid", "sta_password", "ap_ssid", "ap_password", "hostname"};
+    "sta_ssid", "sta_password", "ap_ssid", "ap_password", "hostname", "ip", "gateway", "mask", "dns"};
 
 static bool cfgparamVerify(const char *n)
 {
@@ -362,32 +444,117 @@ static String getInterfaceMacAddress(esp_mac_type_t interface)
   return mac;
 }
 
+/* load configuration parameters from config.ini file if it is present on sd card */
+int loadConfigIni(const char *filename, bool removeFile)
+{
+
+  if (mountSD() != NOERROR)
+  {
+    log_w("mount failed");
+    return ERROR_MOUNT_FAILED;
+  }
+
+  int err = 0;
+  IniFile ini(filename);
+  const size_t bufferLen = 80;
+  char buffer[bufferLen];
+
+  if (!fileSystem.exists(filename))
+  {
+    log_i("File %s not found", filename);
+    err = ERROR_FILE_NOT_FOUND;
+  }
+  else if (!ini.open())
+  {
+    log_e("Failed to open file %s", filename);
+    err = ERROR_FILE_OPEN_FAILED;
+  }
+  else if (!ini.validate(buffer, bufferLen))
+  { // Check the file is valid. This can be used to warn if any lines are longer than the buffer.
+    log_e("ini file %s not valid: %d", ini.getFilename(), ini.getError());
+    err = ERROR_INI_INVALID;
+  }
+
+  if (err)
+  {
+    umountSD();
+    return err;
+  }
+
+  log_i("Ini file %s", filename);
+
+  prefs.begin(PREF_NS, PREF_RW_MODE);
+  prefs.clear();
+
+  for (int i = 0; i < sizeof(cfgparams) / sizeof(cfgparams[0]); i++)
+  {
+    const char *str = cfgparams[i];
+    if (ini.getValue(PREF_NS, str, buffer, bufferLen))
+    {
+      log_i("%s %s: %s", PREF_NS, str, buffer);
+      prefs.putString(str, buffer);
+    }
+  }
+  prefs.end();
+  ini.close();
+  if (removeFile) {
+    log_i("remove config file: %s", filename);
+    fileSystem.remove(filename);
+  }
+  umountSD();
+  ESP.restart();
+  // should never get here
+  log_e("esp restart failed");
+  for (;;)
+    ;
+  return -1;
+}
+
 /* CMD: Return some info */
 void handleInfo(AsyncWebServerRequest *request)
 {
+
   String txt;
 
   uint8_t tmp[6];
-  txt = "{\"info\":{\"filesystem\":{";
-  switch (mountSD())
-  {
-  case MOUNT_OK:
-    txt += "\"status\":\"free\",";
-    txt += "\"cardsize\":";
-    txt += SD_MMC.cardSize();
-    txt += ",\"totalbytes\":";
-    txt += SD_MMC.totalBytes();
-    txt += ",\"usedbytes\":";
-    txt += SD_MMC.usedBytes();
 
-    umountSD();
-    break;
-  case MOUNT_BUSY:
-    txt += "\"status\":\"busy\"";
-    break;
-  default:
-    txt += "\"status\":\"failed\"";
-    break;
+  txt = "{\"info\":{\"filesystem\":{";
+  if (request->hasArg("sd") && request->arg("sd") == "none")
+  {
+    txt += "\"status\":\"info disabled\"";
+  }
+  else
+  {
+    switch (mountSD())
+    {
+    case NOERROR:
+      /* Requests for total/used bytes take too long depending on the number and size of files on the card. */
+      uint64_t card_size, total_bytes, used_bytes;
+#ifdef USE_SD
+      card_size = SD.cardSize();
+      total_bytes = SD.totalBytes();
+      used_bytes = SD.usedBytes();
+#else
+      card_size = SD_MMC.cardSize();
+      total_bytes = SD_MMC.totalBytes();
+      used_bytes = SD_MMC.usedBytes();
+#endif
+      txt += "\"status\":\"free\",";
+      txt += "\"cardsize\":";
+      txt += card_size;
+      txt += ",\"totalbytes\":";
+      txt += total_bytes;
+      txt += ",\"usedbytes\":";
+      txt += used_bytes;
+      umountSD();
+      break;
+    case ERROR_MOUNT_BUSY:
+      txt += "\"status\":\"busy\"";
+      break;
+    default:
+      txt += "\"status\":\"failed\"";
+      break;
+    }
   }
   txt += "},";
   txt += "\"isr\":{";
@@ -396,6 +563,21 @@ void handleInfo(AsyncWebServerRequest *request)
   txt += ",";
   txt += "\"activity_millis_ago\":";
   txt += millis() - sd_state.host_last_activity_millis;
+  txt += "},";
+  txt += "\"meminfo\":{";
+  txt += "\"free_size\":";
+  txt += heap_caps_get_free_size(MALLOC_CAP_DEFAULT);
+  txt += ",";
+  txt += "\"minimum_free_size\":";
+  txt += heap_caps_get_minimum_free_size(MALLOC_CAP_DEFAULT);
+  txt += "},";
+  txt += "\"build\":{";
+  txt += "\"board\":\"";
+  txt += ARDUINO_BOARD;
+  txt += "\",";
+  txt += "\"esp-idf\":\"";
+  txt += esp_get_idf_version();
+  txt += "\"";
   txt += "},";
   txt += "\"cpu\":{";
   txt += "\"model\":\"";
@@ -413,9 +595,14 @@ void handleInfo(AsyncWebServerRequest *request)
   txt += "\"reset_reason\":";
   txt += esp_reset_reason();
   txt += "},";
+
+  int wifiMode = WiFi.getMode();
   txt += "\"network\":{";
+  txt += "\"Mode\":\"";
+  txt += (wifiMode == WIFI_MODE_AP) ? "AP" : "STA";
+  txt += "\",";
   txt += "\"SSID\":\"";
-  txt += WiFi.SSID();
+  txt += (wifiMode == WIFI_MODE_AP) ? WiFi.softAPSSID() : WiFi.SSID();
   txt += "\",";
   txt += "\"WifiStatus\":\"";
   txt += WiFi.status();
@@ -424,12 +611,15 @@ void handleInfo(AsyncWebServerRequest *request)
   txt += WiFi.RSSI();
   txt += " dBm\",";
   txt += "\"IP\":\"";
-  txt += WiFi.localIP().toString();
+  txt += (wifiMode == WIFI_MODE_AP) ? WiFi.softAPIP().toString() : WiFi.localIP().toString();
   txt += "/";
-  txt += WiFi.subnetMask().toString();
+  txt += (wifiMode == WIFI_MODE_AP) ? WiFi.softAPSubnetMask().toString() : WiFi.subnetMask().toString();
   txt += "\",";
   txt += "\"Gateway\":\"";
   txt += WiFi.gatewayIP().toString();
+  txt += "\",";
+  txt += "\"Hostname\":\"";
+  txt += WiFi.getHostname();
   txt += "\",";
   txt += "\"DNS\":[\"";
   txt += WiFi.dnsIP(0).toString();
@@ -445,7 +635,6 @@ void handleInfo(AsyncWebServerRequest *request)
   txt += "\",\"BT\":\"";
   txt += getInterfaceMacAddress(ESP_MAC_BT);
   txt += "\"}}}}";
-
   request->send(200, "application/json", txt);
 }
 
@@ -454,16 +643,29 @@ void handleConfig(AsyncWebServerRequest *request)
 {
 
   String txt;
-
   if (request->args() == 0)
   {
-    txt = "Configuration parameters:\n\n";
+    txt = "Supported configuration parameters:\n\n";
     for (int i = 0; i < sizeof(cfgparams) / sizeof(cfgparams[0]); i++)
     {
       txt += cfgparams[i];
       txt += "\n";
     }
     httpOK(request, txt);
+  }
+
+  if (request->args() == 1 && request->argName(0) == "load")
+  {
+    String v = request->arg((int)0);
+    v = "/" + v;
+    int err = loadConfigIni(v.c_str(), false);
+
+    if (err == NOERROR)
+      httpOK(request);
+    else
+      httpNotFound(request);
+
+    return;
   }
 
   prefs.begin(PREF_NS, PREF_RW_MODE);
@@ -554,14 +756,20 @@ void handleExperimental(AsyncWebServerRequest *request)
     {
       if (v == "esp32" || v == "low")
       {
-        digitalWrite(SD_SWITCH_PIN, LOW);
-        esp32_controls_sd = true;
+        if (!esp32_controls_sd)
+        {
+          sd_lock();
+          esp32_controls_sd = true;
+        }
         txt += " SD controlled by ESP32";
       }
       else if (v == "host" || v == "high")
       {
-        digitalWrite(SD_SWITCH_PIN, HIGH);
-        esp32_controls_sd = false;
+        if (esp32_controls_sd)
+        {
+          esp32_controls_sd = false;
+          sd_unlock();
+        }
         txt += " SD controlled by Host";
       }
       else
@@ -656,12 +864,12 @@ void get_sfn(char *out_sfn, File *file)
 #if FF_USE_LFN
   FILINFO info;
   f_stat(file->path(), &info);
-  strncpy(out_sfn, info.altname, FF_SFN_BUF + 1);
-  if (strlen(out_sfn) == 0)
-#endif /* FF_USE_LFN */
-  {
-    strncpy(out_sfn, file->name(), FF_SFN_BUF + 1);
+  if (strlen(info.altname)) {
+      strncpy(out_sfn, info.altname, FF_SFN_BUF + 1);
+      return;
   }
+#endif /* FF_USE_LFN */
+  strncpy(out_sfn, file->name(), FF_SFN_BUF + 1);
 }
 
 struct HandleListStates {
@@ -689,7 +897,10 @@ void handleList(AsyncWebServerRequest *request)
     path = "/" + path;
   }
 
-  if (mountSD() != MOUNT_OK) {
+  String txt;
+
+  if (mountSD() != NOERROR)
+  {
     httpServiceUnavailable(request, "LIST:SDBUSY");
     return;
   }
@@ -803,7 +1014,7 @@ void handleDownload(AsyncWebServerRequest *request)
   if (path[0] != '/')
     path = "/" + path;
 
-  if (mountSD() != MOUNT_OK)
+  if (mountSD() != NOERROR)
   {
     httpServiceUnavailable(request, "DOWNLOAD:SDBUSY");
     return;
@@ -866,7 +1077,7 @@ void handleRename(AsyncWebServerRequest *request)
     return;
   }
 
-  if (mountSD() != MOUNT_OK)
+  if (mountSD() != NOERROR)
   {
     httpServiceUnavailable(request, "RENAME:SDBUSY");
     return;
@@ -896,7 +1107,7 @@ void handleRemove(AsyncWebServerRequest *request)
     return;
   }
 
-  if (mountSD() != MOUNT_OK)
+  if (mountSD() != NOERROR)
   {
     httpServiceUnavailable(request, "DELETE:SDBUSY");
     return;
@@ -928,7 +1139,7 @@ void handleSha1(AsyncWebServerRequest *request)
     return;
   }
 
-  if (mountSD() != MOUNT_OK)
+  if (mountSD() != NOERROR)
   {
     httpServiceUnavailable(request, "SHA1:SDBUSY");
     return;
@@ -1032,7 +1243,7 @@ void handleUploadProcessPUT(AsyncWebServerRequest *request, uint8_t* data, size_
     states->dataFile = File();
     request->_tempObject = states;
 
-    if (mountSD() != MOUNT_OK) {
+    if (mountSD() != NOERROR) {
       log_i("Upload failed: SDBUSY");
       httpServiceUnavailableJson(request, "{\"error\":\"UPLOAD:SDBUSY\"}");
       return;
@@ -1079,7 +1290,7 @@ void handleUploadProcessPUT(AsyncWebServerRequest *request, uint8_t* data, size_
 
   states->dataFile.write(data, len);
   log_i("Upload PUT: WRITE, length: %d", len);
-  
+
   if(index + len == total) {
     states->dataFile.flush();
     sendFileInfoJson(request, states->dataFile);
@@ -1098,16 +1309,17 @@ void handleMkdir(AsyncWebServerRequest *request)
     return;
   }
 
+  if (mountSD() != NOERROR) {
+    httpServiceUnavailableJson(request, "{\"error\":\"MKDIR:SDBUSY\"}");
+    return;
+  }
+
   String path = request->arg("path");
 
   if (path[0] != '/') {
     path = "/" + path;
   }
 
-  if (mountSD() != MOUNT_OK) {
-    httpServiceUnavailableJson(request, "{\"error\":\"MKDIR:SDBUSY\"}");
-    return;
-  }
 
   if (fileSystem.exists(path) || fileSystem.mkdir(path)) {
     File dir = fileSystem.open(path);
@@ -1128,7 +1340,7 @@ void handleRmdir(AsyncWebServerRequest *request)
     return;
   }
 
-  if (mountSD() != MOUNT_OK)
+  if (mountSD() != NOERROR)
   {
     httpServiceUnavailable(request, "RMDIR:SDBUSY");
     return;
@@ -1140,21 +1352,18 @@ void handleRmdir(AsyncWebServerRequest *request)
   {
     path = "/" + path;
   }
-
   /* Trying to delete root */
   if (path.length() < 2)
   {
     httpInvalidRequest(request, "RMDIR:BADARGS");
     return;
   }
-
-  if (!fileSystem.exists(path))
+  else if (!fileSystem.exists(path))
   {
     httpNotFound(request);
     return;
   }
-
-  if (!fileSystem.rmdir(path))
+  else
   {
     httpInternalError(request);
     return;
@@ -1168,7 +1377,7 @@ void handleUploadProcess(AsyncWebServerRequest *request, String filename, size_t
 {
   if (!index)
   {
-    if (mountSD() != MOUNT_OK) {
+    if (mountSD() != NOERROR) {
       log_i("Upload failed: SDBUSY");
       httpServiceUnavailableJson(request, "{\"error\":\"UPLOAD:SDBUSY\"}");
       return;

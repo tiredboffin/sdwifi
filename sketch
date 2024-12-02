@@ -1,6 +1,7 @@
 #!/bin/sh
 FQBN=esp32:esp32:pico32:PartitionScheme=no_ota,DebugLevel=info
 PORT=/dev/ttyUSB0
+PORTM=/dev/ttyUSB1
 CLEAN=--clean
 
 if [ -z "$1" ]; then
@@ -10,12 +11,12 @@ fi
 
 if [[ "$1" == "build" ]]; then
 	TMPDIR=./tmp arduino-cli compile -e ${CLEAN} \
+	--libraries ./libraries/ESPAsyncWebServer \
 	--fqbn $FQBN
 	retVal=$?
 	if [ $retVal -ne 0 ]; then
 	    exit
 	fi
-#	--libraries ./libs/ESPAsyncWebServer-menodev 
     shift
 fi
 
@@ -27,6 +28,7 @@ if [[ "$1" == "upload" ]]; then
 fi
 
 if [[ "$1" == "test" ]]; then
+    echo "/ping"
     HTTPCODE=`curl  -s -o /dev/null -w "%{http_code}" "http://sdwifi.local/ping" `
     if [[ $HTTPCODE  -ne 200 ]]; then
 	echo "ping HTTP ${HTTPCODE}"
@@ -35,33 +37,38 @@ if [[ "$1" == "test" ]]; then
 
     dd if=/dev/zero of=./tmp/dummy.bin bs=1024 count=4096 2> /dev/null
     sha1sum -b ./tmp/dummy.bin > ./tmp/dummy.sha1
+    echo "/remove1"
     HTTPCODE=`curl  -s -o /dev/null -w "%{http_code}" "http://sdwifi.local/remove?path=test01.bin" `
     if [[ $HTTPCODE  -ne 200 && $HTTPCODE  -ne 404 ]]; then
 	echo "remove HTTP ${HTTPCODE}"
 	exit
     fi
+    echo "/remove2"
     HTTPCODE=`curl  -s -o /dev/null -w "%{http_code}" "http://sdwifi.local/remove?path=test02.bin" `
     if [[ $HTTPCODE  -ne 200 && $HTTPCODE  -ne 404 ]]; then
 	echo "remove HTTP ${HTTPCODE}"
 	exit
     fi
+    echo "/uload1"
     HTTPCODE=`curl  -s -o /dev/null -w "%{http_code}" -F "data=@./tmp/dummy.bin" "http://sdwifi.local/upload?path=test01.bin" `
     if [ $HTTPCODE  -ne 200 ]; then
 	echo "upload HTTP ${HTTPCODE}"
 	exit
     fi
+    echo "/list"
     HTTPCODE=`curl  -s -o /dev/null -w "%{http_code}" "http://sdwifi.local/list?path=test01.bin" `
     if [ $HTTPCODE  -ne 200 ]; then
 	echo "list HTTP ${HTTPCODE}"
 	exit
     fi
     rm ./tmp/dummy.bin
-
+    echo "/rename"
     HTTPCODE=`curl  -s -o /dev/null -w "%{http_code}" "http://sdwifi.local/rename?from=test01.bin&to=test02.bin" `
     if [ $HTTPCODE  -ne 200 ]; then
 	echo "rename HTTP ${HTTPCODE}"
 	exit
     fi
+    echo "/download"
     HTTPCODE=`curl  -s -o ./tmp/dummy.bin -w "%{http_code}" "http://sdwifi.local/download?path=test02.bin" `
     if [ $HTTPCODE  -ne 200 ]; then
 	echo "download HTTP ${HTTPCODE}"
@@ -75,11 +82,12 @@ if [[ "$1" == "test" ]]; then
     fi
     rm ./tmp/dummy.bin ./tmp/dummy.sha1
     curl "http://sdwifi.local/info" | jq
+    echo "end of test"
 fi
 
 if [[ "$1" == "monitor" ]]; then
     if [[ $2 ]]; then
 	PORT=$2
     fi
-    arduino-cli monitor --port $PORT --config baudrate=115200,rts=off,dtr=off
+    arduino-cli monitor --port $PORTM --config baudrate=115200,rts=off,dtr=off
 fi

@@ -4,11 +4,14 @@ simple http server to upload files to [FYSETC SD WiFi Pro card](https://github.c
 
 ## description
  
-The primary use case is my research project on Fujifilm camera custom boot code. For the project I was looking for a convenient way to wirelessly transfer experimental fimrware files to and from SD card that is inserted into the camera slot when the camera's native WiFi cannot be used for that purpose. Otherwise to update/collect the files I had to physically transfser the SD card itself.
+The main use case for this project is my research on custom boot code for Fujifilm cameras. I needed an easy way to wirelessly transfer experimental firmware files to and from an SD card inserted in the camera. Without this setup, I would have to physically remove and transfer the SD card every time I needed to update or collect files.
 
-While the use case is very specific to my needs the server may still prove to be useful in other similar simple scenarios when it could be reasonably guaranteed by some means that the SD card is not used actively by the host (camera, printer etc) at the time this server is accessing the card. Or if the host is capable to recover gracefully from sporadic SD card access errors.
+While my use case is pretty specific, this server could still be useful in other simple scenarios—provided you can reasonably ensure the SD card isn't actively being used by the host (like a camera, printer, etc.) while the server is accessing it. Alternatively, it could work if the host can handle occasional SD card access errors gracefully.
 
-The code is based on standard Arduino/ESP32 sketches and the orginal FYSETC [firmware](https://github.com/FYSETC/SdWiFiBrowser). 
+The code is based on standard Arduino/ESP32 sketches and the orginal FYSETC [firmware](https://github.com/FYSETC/SdWiFiBrowser) and tested on FYSETC SD Wifi Pro card rev 1.1
+
+![image](https://github.com/user-attachments/assets/bac7d2be-150f-4b85-b5eb-42dadb482aca)
+
 
 ## build instructions
 
@@ -29,9 +32,25 @@ The code is based on standard Arduino/ESP32 sketches and the orginal FYSETC [fir
       [   118][I][sdwifi.ino:167] setupAP(): Soft AP created: sdwifi
       [   131][I][sdwifi.ino:140] setup(): HTTP server started
 
-## usage
+## configuration
 
-By default the server starts as unprotected Wifi Access Point with defaul name "sdwifi" and ip address 192.168.4.1. The AP name and AP password can be changed or the card can be configured to use Wifi STA mode.
+By default, the server starts as an unprotected WiFi Access Point with the default name "sdwifi" and IP address 192.168.4.1. Once connected to the access point, the WiFi mode ("access point" or "station"), SSID, password, and IP settings can be changed using the "config" command, for e.g.:
+
+    curl "http://192.168.4.1/confiig?ap_ssid=myssid&ap_password=mypassword"
+
+(see more example in the usage section). 
+
+Alternatively, sdwifi_config.ini file can eb prepared on a PC and placed in the root folder of the SD card. 
+
+Sample sdwifi_config.ini:
+```
+[WiFi]
+sta_ssid=<SSID>
+sta_password=<password>
+```
+Once the SD card is safely unmounted and reinserted, the server will automatically pick up the settings from the .ini file.
+
+## usage
 
 The server accepts the following commands:
 
@@ -142,9 +161,10 @@ The server accepts the following commands:
 The server can also be used in a browser with the original [firmware](https://github.com/FYSETC/SdWiFiBrowser) web application.
 
 To build the filesystem with the web app:
-  - download the firmware source code
-  - copy ./data from the firmware directory into sdinfo/data 
-  - build sdinfo as described above and then execute
+  - download the SdWifiBroser firmware source code
+  - copy SDWifiBrowser/data directory into sdwifi/data
+  - execute
 
         ./fs build upload
+
 
