@@ -570,6 +570,11 @@ void handleInfo(void)
   txt += heap_caps_get_minimum_free_size(MALLOC_CAP_DEFAULT);
   txt += "},";
   txt += "\"build\":{";
+#ifdef GITCOMMIT
+  txt += "\"commit\":\"";
+  txt += GITCOMMIT;
+  txt += "\",";
+#endif
   txt += "\"board\":\"";
   txt += ARDUINO_BOARD;
   txt += "\",";
