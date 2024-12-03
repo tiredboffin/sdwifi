@@ -2,4 +2,4 @@
 *.elf
 .vscode
 tmp/
-
+build/
