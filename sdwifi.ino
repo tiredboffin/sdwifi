@@ -570,7 +570,12 @@ void handleInfo(void)
   txt += heap_caps_get_minimum_free_size(MALLOC_CAP_DEFAULT);
   txt += "},";
   txt += "\"build\":{";
-#if defined(ASYNCWEBSERVER_VERSION)
+#ifdef GITCOMMIT
+  txt += "\"commit\":\"";
+  txt += GITCOMMIT;
+  txt += "\",";
+#endif
+#ifdef  ASYNCWEBSERVER_VERSION;
   txt += "\"AsyncWebServer\":";
   txt += ASYNCWEBSERVER_VERSION;
   txt += "\",";

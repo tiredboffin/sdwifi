@@ -3,6 +3,8 @@ FQBN=esp32:esp32:pico32:PartitionScheme=no_ota,DebugLevel=info
 PORT=/dev/ttyUSB0
 PORTM=/dev/ttyUSB1
 CLEAN=--clean
+BRANCH=$(git branch | cut -d' ' -f2)
+SHA1=$(git rev-parse ${BRANCH})
 
 if [ -z "$1" ]; then
 	echo "Usage: sketch build|upload|test"
@@ -11,6 +13,7 @@ fi
 
 if [[ "$1" == "build" ]]; then
 	TMPDIR=./tmp arduino-cli compile -e ${CLEAN} \
+	--build-property "build.extra_flags=-DGITCOMMIT=\"${SHA1}\"" \
 	--fqbn $FQBN
 	retVal=$?
 	if [ $retVal -ne 0 ]; then
