@@ -1,6 +1,0 @@
-[submodule "ESPAsyncWebServer"]
-	path = ESPAsyncWebServer
-	url = https://github.com/me-no-dev/ESPAsyncWebServer.git
-[submodule "libs/ESPAsyncWebServer-menodev"]
-	path = libs/ESPAsyncWebServer-menodev
-	url = https://github.com/me-no-dev/ESPAsyncWebServer.git
