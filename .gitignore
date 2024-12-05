@@ -1,5 +1,7 @@
 *.map
 *.elf
 .vscode
+*.sh
 tmp/
+*.ini
 

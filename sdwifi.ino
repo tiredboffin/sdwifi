@@ -109,9 +109,12 @@ void setup(void)
 #ifdef USE_SD
   pinMode(SD_POWER_PIN, OUTPUT);
 #endif
-  /* check for config file on sd, if found get its values and remove it */
-  (void)loadConfigIni(SDWIFI_INI_FILENAME, true);
-
+  prefs.begin(PREF_NS, PREF_RO_MODE);
+  String use_ini = prefs.isKey("ini") ? prefs.getString("ini") : "1";
+  if (use_ini == "1")
+    /* check for config file on sd, if found get its values and remove it */
+    (void)loadConfigIni(SDWIFI_INI_FILENAME, true);
+  prefs.end();
 
   sd_state.mount_is_safe = false;
 
@@ -414,7 +417,7 @@ static void umountSD(void)
 }
 // wifi config parameters recognized in config?param=value and in sdwifi_config.ini file
 static const char *cfgparams[] = {
-    "sta_ssid", "sta_password", "ap_ssid", "ap_password", "hostname", "ip", "gateway", "mask", "dns"};
+    "sta_ssid", "sta_password", "ap_ssid", "ap_password", "hostname", "ip", "gateway", "mask", "dns", "ini"};
 
 static bool cfgparamVerify(const char *n)
 {
@@ -570,6 +573,11 @@ void handleInfo(void)
   txt += heap_caps_get_minimum_free_size(MALLOC_CAP_DEFAULT);
   txt += "},";
   txt += "\"build\":{";
+#ifdef GITCOMMIT
+  txt += "\"commit\":\"";
+  txt += GITCOMMIT;
+  txt += "\",";
+#endif
   txt += "\"board\":\"";
   txt += ARDUINO_BOARD;
   txt += "\",";
