@@ -1,13 +1,11 @@
 #!/bin/sh
-#Guess ttyUSB port 
-if [ -f set-tty-ports.sh ]; then
-    . ./set-tty-ports.sh
+#Guess ttyUSB port and set custom C flags
+if [ -f env.sh ]; then
+    . ./env.sh
 fi
 
 CLEAN=${CLEAN:-"--clean"}
 DEBUGLEVEL=${DEBUGLEVEL:-info}
-BRANCH=$(git branch | cut -d' ' -f2)
-SHA1=$(git rev-parse ${BRANCH})
 PORT=${SDWIFI_DEV:-/dev/ttyUSB0}
 PORTM=${USBTTL_DEV:-${PORT}}
 
@@ -19,9 +17,17 @@ if [ -z "$1" ]; then
 fi
 
 if [[ "$1" == "build" ]]; then
-	TMPDIR=./tmp arduino-cli compile -j 0 -e  ${CLEAN} \
+	#BUGBUG: found no better way to add -D to compiler options
+	PL_EXTRA_CPP=$(arduino-cli compile --fqbn $FQBN --show-properties | grep compiler.cpp.extra_flags)
+	PL_EXTRA_C=$(arduino-cli compile --fqbn $FQBN --show-properties | grep compiler.c.extra_flags)
+	EXTRA_CPP="$PL_EXTRA_CPP ${CPPFLAGS}"
+	EXTRA_C="$PL_EXTRA_C ${CFLAGS}"
+	echo "$EXTRA_CPP"
+	echo "$EXTRA_C"
+	TMPDIR=./tmp arduino-cli compile -e ${CLEAN} \
 	--fqbn $FQBN \
-	--build-property "build.extra_flags+=-DGITCOMMIT=\"${SHA1::7}\""
+	--build-property "${EXTRA_CPP}" \
+	--build-property "${EXTRA_C}"
 	retVal=$?
 	if [ $retVal -ne 0 ]; then
 	    exit
