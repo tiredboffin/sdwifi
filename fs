@@ -7,8 +7,15 @@
 TMPDIR=./tmp
 FQBN=esp32:esp32:pico32:PartitionScheme=no_ota,DebugLevel=info
 
+if [ -f set-tty-ports.sh ]; then
+    . ./set-tty-ports.sh
+fi
+PORT=${SDWIFI_DEV:-/dev/ttyUSB0}
+PORTM=${USBTTL_DEV:-${PORT}}
+
+
 if [ -z "$1" ]; then
-	echo "Usage: fs build|upload"
+	echo "Usage: fs build|upload|erase"
 	exit
 fi
 
@@ -29,6 +36,15 @@ tmp=(${tmp//,/ })
 SPIFFS_START=${tmp[0]}
 SPIFFS_SIZE=${tmp[1]}
 
+while read -r line
+do
+    name=$(echo "$line" | awk -F',' '{printf "%s%s", $1,$3}')
+    if [[ $name == "nvs nvs" ]]; then
+        NVS_OFFSET_SIZE=$(echo "$line" | awk -F',' '{printf "%s %s", $4, $5}')
+        break
+    fi
+done < "$PARTITION_TABLE"
+
 if [[ "$1" == b* ]]; then
     $MKSPIFFS_PATH/mkspiffs -c data --page 256 --block 4096 --size $((SPIFFS_SIZE)) $OUTPUT_PATH/$BUILD_PROJECT_NAME.filesystem.bin
     retVal=$?
@@ -40,6 +56,34 @@ if [[ "$1" == b* ]]; then
 fi
 
 if [[ "$1" == up* ]]; then
-    esptool --port /dev/ttyUSB0 write_flash $SPIFFS_START $OUTPUT_PATH/$BUILD_PROJECT_NAME.filesystem.bin
+    esptool --port ${PORT} write_flash $SPIFFS_START $OUTPUT_PATH/$BUILD_PROJECT_NAME.filesystem.bin
+    shift
+fi
+
+if [[ "$1" == "erase" ]]; then
+    esptool --port ${PORT} --chip esp32 erase_flash
+    shift
+fi
+
+if [[ "$1" == "read_part" ]]; then
+    esptool --port ${PORT} read_flash 0x8000 0x1000 part_table.bin
+    shift
+fi
+
+if [[ "$1" == "read_nvs" ]]; then
+    if [[ -z $NVS_OFFSET_SIZE ]]; then
+	echo "ERROR: set NVS offset and size"
+	exit
+    fi
+    esptool --port ${PORT} read_flash ${NVS_OFFSET_SIZE} nvs_readout.bin
+    shift
+fi
+
+if [[ "$1" == "erase_nvs" ]]; then
+    if [[ -z $NVS_OFFSET_SIZE ]]; then
+	echo "ERROR: set NVS offset and size"
+	exit
+    fi
+    esptool --port ${PORT} erase_region ${NVS_OFFSET_SIZE}
     shift
 fi
