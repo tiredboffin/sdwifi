@@ -4,11 +4,42 @@
  *  Based on a simple WebServer.
  */
 
-#define PUT_UPLOAD
-
 #define MIN_MEM_THRESHOLD 32768
+#define PUT_UPLOAD
+#define ENABLE_AUTO_INI
 
-// #define USE_SD
+#undef USE_SD
+
+ /* INI_AUTO_DISABLE:
+     Do not auto process ini file, the /congfig?load command still works though.
+  */
+#define INI_AUTO_DISABLE  0
+  /* INI_AUTO_SAFE: Check that the card is cold booted in dev board in UPLOAD (SW2 ON) mode.
+     Safe to read and to delete the file.
+  */
+#define INI_AUTO_SAFE 1
+  /* INI_AUTO_AT_BOOT: Check for a configuration file on the SD card at boot time in config().
+     If the file is found, retrieve its values and then delete the file.
+
+     This mode may cause issues with hosts (such as digital cameras) that mount the filesystem immediately after
+     powering on the SD card and ar enot eable to recover from card error.
+  */
+#define INI_AUTO_AT_BOOT 2
+  /* INI_AUTO_UNSAFE: Do not check if the card might be mounted by the host. Read the file but do not delete it and do not
+     reboot automatically.
+  */
+#define INI_AUTO_UNSAFE 3
+  /* INI_AUTO_DANGEROUS: Disables the check for whether the card might be mounted by the host.
+     Reads, deletes the file, and triggers a reboot.
+     While this can lead to potential file system corruption, it generally works without issues on certain hosts.
+  */
+#define INI_AUTO_DANGEROUS 4
+#define INI_AUTO_PROCESSED (-1)
+#define INI_READ_DEFAULT (  INI_AUTO_SAFE )
+
+#include <rom/gpio.h>
+#include <soc/boot_mode.h>
+
 
 #include <WiFi.h>
 #include <WiFiClient.h>
@@ -58,7 +89,7 @@ static unsigned umount_counter = 0;
 
 #define WIFI_STA_TIMEOUT 5000
 
-#define HOST_ACTIVITY_GRACE_PERIOD_MILLIS 2000
+#define HOST_ACTIVITY_GRACE_PERIOD_MILLIS 1000
 
 enum
 {
@@ -69,6 +100,9 @@ enum
   ERROR_FILE_OPEN_FAILED,
   ERROR_INI_INVALID,
 };
+
+
+static int ini_auto_mode =   INI_AUTO_DISABLE ;
 
 WebServer server(80);
 
@@ -102,20 +136,27 @@ void debug_meminfo(char *txt, unsigned count)
   log_e("%s, %u, %u, %u", txt, count, heap_caps_get_free_size(MALLOC_CAP_DEFAULT), heap_caps_get_minimum_free_size(MALLOC_CAP_DEFAULT));
 }
 
+static int boot_mode;
+
 void setup(void)
 {
   sd_state.host_last_activity_millis = millis();
+  boot_mode = GPIO_REG_READ(GPIO_STRAP_REG);
 
   pinMode(SD_SWITCH_PIN, OUTPUT);
 #ifdef USE_SD
   pinMode(SD_POWER_PIN, OUTPUT);
 #endif
+
+#ifdef ENABLE_AUTO_INI
   prefs.begin(PREF_NS, PREF_RO_MODE);
-  String use_ini = prefs.isKey("ini") ? prefs.getString("ini") : "1";
-  if (use_ini == "1")
-    /* check for config file on sd, if found get its values and remove it */
-    (void)loadConfigIni(SDWIFI_INI_FILENAME, true);
+  ini_auto_mode = prefs.isKey("ini") ? prefs.getInt("ini") : INI_READ_DEFAULT;
   prefs.end();
+  if (ini_auto_mode == INI_AUTO_AT_BOOT)
+  {
+    (void)loadConfigIni(SDWIFI_INI_FILENAME, true);
+  }
+#endif
 
   sd_state.mount_is_safe = false;
 
@@ -123,6 +164,7 @@ void setup(void)
 
   /* Make SD card available to the Host early in the process */
   digitalWrite(SD_SWITCH_PIN, HIGH);
+
   Serial.setDebugOutput(true);
 
   setupWiFi();
@@ -130,6 +172,7 @@ void setup(void)
   setupWebServer();
   server.begin();
   debug_meminfo("setup", 0);
+
 }
 
 void IRAM_ATTR sd_isr(void)
@@ -170,6 +213,29 @@ void monitor_sd(void)
 void loop(void)
 {
   monitor_sd();
+
+#ifdef ENABLE_AUTO_INI
+  switch (ini_auto_mode)
+  {
+  case INI_AUTO_SAFE :
+      if (sd_state.isr_counter < 2 && boot_mode == 0x13 && sd_state.mount_is_safe) {
+        if (sd_state.mount_is_safe && loadConfigIni(SDWIFI_INI_FILENAME, true) != ERROR_MOUNT_FAILED) {
+            ini_auto_mode = INI_AUTO_PROCESSED;
+        }
+      }
+      break;
+  case INI_AUTO_UNSAFE:
+      if (loadConfigIni(SDWIFI_INI_FILENAME, false) != ERROR_MOUNT_FAILED)
+          ini_auto_mode = INI_AUTO_PROCESSED;
+      break;
+  case INI_AUTO_DANGEROUS :
+      if (loadConfigIni(SDWIFI_INI_FILENAME, true) != ERROR_MOUNT_FAILED)
+          ini_auto_mode = INI_AUTO_PROCESSED;
+      break;
+  default:
+    break;
+  }
+#endif
 
   /* handle one client at a time */
   server.handleClient();
@@ -262,7 +328,7 @@ void setupWebServer()
 static bool setupAP(void)
 {
   String ssid = prefs.isKey("ap_ssid") ? prefs.getString("ap_ssid") : default_name;
-  String password = prefs.isKey("ap_password") ? prefs.getString("ap_password") : default_name;
+  String password = prefs.getString("ap_password");
 
   WiFi.mode(WIFI_AP);
 
@@ -451,12 +517,11 @@ static String getInterfaceMacAddress(esp_mac_type_t interface)
 }
 
 /* load configuration parameters from config.ini file if it is present on sd card */
-int loadConfigIni(const char *filename, bool removeFile)
+int loadConfigIni(const char *filename, bool removeFileAndReboot)
 {
 
   if (mountSD() != NOERROR)
   {
-    log_w("mount failed");
     return ERROR_MOUNT_FAILED;
   }
 
@@ -503,11 +568,15 @@ int loadConfigIni(const char *filename, bool removeFile)
   }
   prefs.end();
   ini.close();
-  if (removeFile) {
-    log_i("remove config file: %s", filename);
+  if (removeFileAndReboot) {
+    log_i("remove ini file: %s", filename);
     fileSystem.remove(filename);
   }
   umountSD();
+
+  if (!removeFileAndReboot)
+    return NOERROR;
+
   ESP.restart();
   // should never get here
   log_e("esp restart failed");
@@ -604,6 +673,9 @@ void handleInfo(void)
   txt += ",";
   txt += "\"coreid\":";
   txt += xPortGetCoreID();
+  txt += ",";
+  txt += "\"boot_mode\":";
+  txt += boot_mode;
   txt += ",";
   txt += "\"millis\":";
   txt += millis();
@@ -800,6 +872,11 @@ void handleExperimental(void)
       {
         pinMode(SD_POWER_PIN, OUTPUT);
         txt += "OUTPUT";
+      }
+      else if (v == "input")
+      {
+        digitalWrite(SD_POWER_PIN, INPUT);
+        txt += "INPUT";
       }
       else if (v == "low")
       {
