@@ -22,8 +22,6 @@ if [[ "$1" == "build" ]]; then
 	PL_EXTRA_C=$(arduino-cli compile --fqbn $FQBN --show-properties | grep compiler.c.extra_flags)
 	EXTRA_CPP="$PL_EXTRA_CPP ${CPPFLAGS}"
 	EXTRA_C="$PL_EXTRA_C ${CFLAGS}"
-	echo "$EXTRA_CPP"
-	echo "$EXTRA_C"
 	TMPDIR=./tmp arduino-cli compile -e ${CLEAN} \
 	--fqbn $FQBN \
 	--build-property "${EXTRA_CPP}" \
