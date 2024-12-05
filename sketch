@@ -1,8 +1,15 @@
 #!/bin/sh
-FQBN=esp32:esp32:pico32:PartitionScheme=no_ota,DebugLevel=info
-PORT=/dev/ttyUSB0
-PORTM=/dev/ttyUSB1
-CLEAN=--clean
+#Guess ttyUSB port and set custom C flags
+if [ -f env.sh ]; then
+    . ./env.sh
+fi
+
+CLEAN=${CLEAN:-"--clean"}
+DEBUGLEVEL=${DEBUGLEVEL:-info}
+PORT=${SDWIFI_DEV:-/dev/ttyUSB0}
+PORTM=${USBTTL_DEV:-${PORT}}
+
+FQBN=esp32:esp32:pico32:PartitionScheme=no_ota,DebugLevel=${DEBUGLEVEL}
 
 if [ -z "$1" ]; then
 	echo "Usage: sketch build|upload|test"
@@ -10,9 +17,16 @@ if [ -z "$1" ]; then
 fi
 
 if [[ "$1" == "build" ]]; then
+	#BUGBUG: found no better way to add -D to compiler options
+	PL_EXTRA_CPP=$(arduino-cli compile --fqbn $FQBN --show-properties | grep compiler.cpp.extra_flags)
+	PL_EXTRA_C=$(arduino-cli compile --fqbn $FQBN --show-properties | grep compiler.c.extra_flags)
+	EXTRA_CPP="$PL_EXTRA_CPP ${CPPFLAGS}"
+	EXTRA_C="$PL_EXTRA_C ${CFLAGS}"
 	TMPDIR=./tmp arduino-cli compile -e ${CLEAN} \
-	--libraries ./libraries/ESPAsyncWebServer \
-	--fqbn $FQBN
+	--fqbn $FQBN \
+	--build-property "${EXTRA_CPP}" \
+	--build-property "${EXTRA_C}" \
+	--library=./libraries/ESPAsyncWebServer
 	retVal=$?
 	if [ $retVal -ne 0 ]; then
 	    exit
@@ -87,7 +101,7 @@ fi
 
 if [[ "$1" == "monitor" ]]; then
     if [[ $2 ]]; then
-	PORT=$2
+	PORTM=$2
     fi
     arduino-cli monitor --port $PORTM --config baudrate=115200,rts=off,dtr=off
 fi
