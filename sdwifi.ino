@@ -745,6 +745,11 @@ void handleConfig(void)
   if (server.args() == 1 && server.argName(0) == "load")
   {
     String v = server.arg(0);
+
+    if (!v.endsWith(".ini")) {
+          httpNotAllowed();
+          return;
+    }
     v = "/" + v;
     int err = loadConfigIni(v.c_str(), false);
 
@@ -752,7 +757,6 @@ void handleConfig(void)
       httpOK();
     else
       httpNotFound();
-
     return;
   }
 
