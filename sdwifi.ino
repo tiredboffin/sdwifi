@@ -93,6 +93,7 @@ volatile struct
 
 static bool esp32_controls_sd = false;
 static bool fs_is_mounted = false;
+static bool spiffs_is_ok = false;
 
 void IRAM_ATTR sd_isr(void);
 
@@ -125,7 +126,7 @@ void setup(void)
   Serial.setDebugOutput(true);
 
   setupWiFi();
-  SPIFFS.begin();
+  spiffs_is_ok = SPIFFS.begin();
   setupWebServer();
   server.begin();
   debug_meminfo("setup", 0);
@@ -243,7 +244,11 @@ void setupWebServer()
   server.on("/delete", handleRemove);
 
   /* Static content */
-  server.serveStatic("/", SPIFFS, "/");
+  if (spiffs_is_ok)
+    server.serveStatic("/", SPIFFS, "/");
+  else
+    //TODO: perhaps add a small static page with a help/instructions or reference to github README.md
+    ;
   server.onNotFound([]()
                     {
     switch(server.method()) {
