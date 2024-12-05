@@ -1,4 +1,16 @@
 #!/bin/sh
+#Guess ttyUSB port and set custom C flags
+if [ -f env.sh ]; then
+    . ./env.sh
+fi
+
+CLEAN=${CLEAN:-"--clean"}
+DEBUGLEVEL=${DEBUGLEVEL:-info}
+PORT=${SDWIFI_DEV:-/dev/ttyUSB0}
+PORTM=${USBTTL_DEV:-${PORT}}
+
+FQBN=esp32:esp32:pico32:PartitionScheme=no_ota,DebugLevel=${DEBUGLEVEL}
+
 if [ -z "$1" ]; then
 	echo "Usage: sketch build|upload|test"
 	exit
