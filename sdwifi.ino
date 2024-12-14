@@ -956,14 +956,14 @@ void handleExperimental(void)
 }
 
 #include "ff.h"
-void get_sfn(char *out_sfn, File *file)
+void get_sfn(char *out_sfn, File *file, size_t size)
 {
 #if FF_USE_LFN
   FILINFO info;
   f_stat(file->path(), &info);
-  strncpy(out_sfn, info.altname, FF_SFN_BUF + 1);
+  strncpy(out_sfn, info.altname, size);
 #else  /* FF_USE_LFN */
-  strncpy(out_sfn, file->name().c_str(), FF_SFN_BUF + 1);
+  strncpy(out_sfn, file->name().c_str(), sze);
 #endif /* FF_USE_LFN */
 }
 
@@ -1015,7 +1015,7 @@ void handleList()
       txt = "[";
       while (File file = root.openNextFile())
       {
-        get_sfn(sfn, &file);
+        get_sfn(sfn, &file, sizeof(sfn));
 
         if (count++)
         {
@@ -1050,7 +1050,7 @@ void handleList()
     }
     else
     {
-      get_sfn(sfn, &root);
+      get_sfn(sfn, &root, sizeof(sfn));
 
       txt = "{\"item\": {\"type\":\"file\",";
       txt += "\"name\":\"";
