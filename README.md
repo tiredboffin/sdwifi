@@ -69,7 +69,7 @@ The server accepts the following commands:
      rmdir    - remove a directory (has to be empty)
      list     - get all file info in a directory
  
- #### config   - change wifi settings
+ #### config   - change wifi settings or local time
  
     param=value
  
@@ -95,10 +95,16 @@ The server accepts the following commands:
    Reset wifi settings to default (AP mode, no password)
     
     curl http://sdwifi.local/config?reset=all
-
+ 
    or reset a parameter selectively 
    
     curl http://sdwifi.local/config?reset=sta_ssid
+ 
+   or set time with
+   
+    curl http://sdwifi.local/config?time=$(date -Iseconds)
+    curl http://sdwifi.local/config?time="20204-12-14T22:10:12"
+    
 
    Download a file uilog.bin 
 

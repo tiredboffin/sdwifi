@@ -172,7 +172,6 @@ void setup(void)
   setupWebServer();
   server.begin();
   debug_meminfo("setup", 0);
-
 }
 
 void IRAM_ATTR sd_isr(void)
@@ -680,6 +679,9 @@ void handleInfo(void)
   txt += "\"millis\":";
   txt += millis();
   txt += ",";
+  txt += "\"time\":\"";
+  txt += getCurrentTimeAsString();
+  txt += "\",";
   txt += "\"reset_reason\":";
   txt += esp_reset_reason();
   txt += "},";
@@ -726,7 +728,20 @@ void handleInfo(void)
   server.send(200, "application/json", txt);
 }
 
-/* CMD: Update configuration parameters */
+
+/*TODO: should be a standard function ?*/
+String getCurrentTimeAsString (void) {
+  char buf[32];
+  time_t epoch;
+  struct tm tm;
+
+  time(&epoch);
+  localtime_r(&epoch, &tm);
+  strftime(buf, sizeof(buf), "%Y-%m-%dT%H-%M-%S", &tm);
+  return (String(buf));
+}
+
+/* CMD: Update configuration parameters and local time  */
 void handleConfig(void)
 {
 
@@ -777,6 +792,21 @@ void handleConfig(void)
       else
         prefs.remove(v.c_str());
       txt += n + " " + v + "\n";
+    }
+    else if (n == "time") {
+      struct tm tm;
+      timeval tv;
+      if (sscanf(v.c_str(), "%4d-%2d-%2dT%2d:%2d:%2d", &tm.tm_year, &tm.tm_mon, &tm.tm_mday, &tm.tm_hour, &tm.tm_min, &tm.tm_sec) == 6)
+      {
+          tm.tm_year -= 1900;
+          tm.tm_mon--;
+          tv = { .tv_sec = mktime(&tm), .tv_usec = 0 };
+          settimeofday(&tv, NULL);
+          txt += getCurrentTimeAsString();
+      } else {
+          txt += "Time not set";
+      }
+
     }
     else
     {
