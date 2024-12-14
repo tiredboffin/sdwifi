@@ -963,7 +963,7 @@ void get_sfn(char *out_sfn, File *file, size_t size)
   f_stat(file->path(), &info);
   strncpy(out_sfn, info.altname, size);
 #else  /* FF_USE_LFN */
-  strncpy(out_sfn, file->name().c_str(), sze);
+  strncpy(out_sfn, file->name().c_str(), size);
 #endif /* FF_USE_LFN */
 }
 
