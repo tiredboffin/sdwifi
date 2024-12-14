@@ -103,7 +103,7 @@ The server accepts the following commands:
    or set time with
    
     curl http://sdwifi.local/config?time=$(date -Iseconds)
-    curl http://sdwifi.local/config?time="20204-12-14T22:10:12"
+    curl http://sdwifi.local/config?time="2024-12-14T22:32:12"
     
 
    Download a file uilog.bin 
