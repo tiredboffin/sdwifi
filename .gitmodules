@@ -1,3 +1,0 @@
-[submodule "libraries/ESPAsyncWebServer"]
-	path = libraries/ESPAsyncWebServer
-	url = git@github.com:mathieucarbou/ESPAsyncWebServer.git

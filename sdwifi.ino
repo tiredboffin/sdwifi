@@ -5,29 +5,40 @@
  */
 
 #define USE_NTP
+#define USE_SHA1
+#define USE_MDNS
+#define MAX_MS_PER_CHUNK (2*1000)
 
 #ifdef ASYNCWEBSERVER_REGEX
 # define PUT_UPLOAD
 #endif
 
+#include <AsyncTCP.h>
 #include <WiFi.h>
 #include <WiFiClient.h>
 
 #include <ESPAsyncWebServer.h>
 
-#include <ESPmDNS.h>
+#ifdef USE_MDNS
+# include <ESPmDNS.h>
+#endif
+
+#include <ff.h> // f_stat, FILINFO, FF_DIR
+
 #include <SD_MMC.h>
 #include <Preferences.h>
-#include <mbedtls/sha1.h>
 #include <esp_mac.h>
 #include <SPIFFS.h>
 #include <time.h>
 
-#if defined __has_include
-# if __has_include(<mbedtls/compat-2.x.h>)
-#  include <mbedtls/compat-2.x.h>
+#ifdef USE_SHA1
+# include <mbedtls/sha1.h>
+# if defined __has_include
+#  if __has_include(<mbedtls/compat-2.x.h>)
+#   include <mbedtls/compat-2.x.h>
+#  endif
 # endif
-#endif
+#endif /* USE_SHA1 */
 
 #ifdef USE_NTP
 # ifdef CONFIG_LWIP_TCPIP_CORE_LOCKING
@@ -158,11 +169,13 @@ void setupWiFi()
   /* assume STA mode if sta_ssid is defined */
   if (prefs.isKey("sta_ssid") && setupSTA())
   {
+#ifdef USE_MDNS
     String hostname = prefs.isKey("hostname") ? prefs.getString("hostname") : default_name;
     if (!MDNS.begin(hostname))
     {
       log_e("Error setting up MDNS responder");
     }
+#endif /* USE_MDNS */
   }
   else
   {
@@ -191,7 +204,9 @@ void setupWebServer()
   server.on("^/upload/(.+)$", HTTP_PUT, handleUpload, nullptr, handleUploadProcessPUT);
 #endif
   server.on("/download", HTTP_GET, handleDownload);
+#ifdef USE_SHA1
   server.on("/sha1", handleSha1);
+#endif
   server.on("/remove", handleRemove);
   server.on("/list", handleList);
   server.on("/rename", handleRename);
@@ -650,25 +665,44 @@ void handleExperimental(AsyncWebServerRequest *request)
   httpOK(request, txt);
 }
 
-#include "ff.h"
-void get_sfn(char *out_sfn, File *file)
+void get_file_info(const char *path, char *out_sfn, unsigned int *timestamp, size_t *size)
 {
-#if FF_USE_LFN
   FILINFO info;
-  f_stat(file->path(), &info);
-  strncpy(out_sfn, info.altname, FF_SFN_BUF + 1);
+  unsigned int x = millis();
+  f_stat(path, &info);
+  log_i("stat: %ums", millis() - x);
+  get_file_info(&info, out_sfn, timestamp, size);
+}
+
+
+void get_file_info(FILINFO *fno, char *out_sfn, unsigned int *timestamp, size_t *size)
+{
+  struct tm tm;
+
+  tm.tm_sec  = ((fno->ftime >>  0) & 0x1F) * 2,
+  tm.tm_min  = ((fno->ftime >>  5) & 0x3F),
+  tm.tm_hour = ((fno->ftime >> 11) & 0x1F),
+  tm.tm_mday = ((fno->fdate >>  0) & 0x1F),
+  tm.tm_mon  = ((fno->fdate >>  5) & 0x0F) - 1,
+  tm.tm_year = ((fno->fdate >>  9) & 0x7F) + 80,
+
+  *timestamp = mktime(&tm);
+  *size = fno->fsize;
+
+#if FF_USE_LFN
+  strncpy(out_sfn, fno->altname, FF_SFN_BUF + 1);
   if (strlen(out_sfn) == 0)
 #endif /* FF_USE_LFN */
   {
-    strncpy(out_sfn, file->name(), FF_SFN_BUF + 1);
+    strncpy(out_sfn, fno->fname, FF_SFN_BUF + 1);
   }
 }
 
 struct HandleListStates {
-  File root;
   String txt;
-  int count;
+  unsigned int count;
   bool finished;
+  FF_DIR dir;
 };
 
 /* CMD list */
@@ -698,17 +732,25 @@ void handleList(AsyncWebServerRequest *request)
     File root = fileSystem.open(path);
     if (root.isDirectory()) {
       struct HandleListStates* states = new HandleListStates();
-      states->root = root;
+      root.close();
+      FRESULT res = f_opendir(&states->dir, path.c_str());
+      if (res != FR_OK) {
+        httpNotFound(request);
+        umountSD();
+        free(states);
+        return;
+      }
       request->_tempObject = states;
 
       request->onDisconnect([request](){
         struct HandleListStates* states = (struct HandleListStates*) request->_tempObject;
-        if (states && states->root) {
-          states->root.close();
-          states->root = File();
+        if (states) {
+          f_closedir(&states->dir);
         }
-        umountSD();
-        log_v("LIST aborted");
+        if (!states || !states->finished) {
+          umountSD();
+        }
+        log_i("LIST disconnect");
       });
 
       AsyncWebServerResponse *response = request->beginChunkedResponse(
@@ -719,18 +761,28 @@ void handleList(AsyncWebServerRequest *request)
             const size_t index) mutable -> size_t
         {
           struct HandleListStates* states = (struct HandleListStates*) request->_tempObject;
+          if (states->finished) {
+            return 0;
+          }
 
+          unsigned int _start_chunk_ms = millis();
           char sfn[FF_SFN_BUF + 1];
+          boolean isDir;
+          unsigned int timestamp;
+          size_t fsize;
 
-          log_i("index %u, %u", index, max_len);
+          log_i("index:%u, max_len:%u", index, max_len);
+
           if (index == 0) {
             states->txt = "[";
             states->count = 0;
             states->finished = false;
           }
 
-          while (File file = states->root.openNextFile()) {
-            get_sfn(sfn, &file);
+          FILINFO fno;
+          while ( FR_OK == f_readdir(&states->dir, &fno) && fno.fname[0] != 0) {
+            get_file_info(&fno, sfn, &timestamp, &fsize);
+            isDir = fno.fattrib & AM_DIR;
 
             if (states->count++) {
               states->txt += ",";
@@ -739,40 +791,36 @@ void handleList(AsyncWebServerRequest *request)
             states->txt += "{\"id\":";
             states->txt += states->count;
             states->txt += ",\"type\":";
-
-            if (file.isDirectory()) {
-              states->txt += "\"dir\",";
-            } else {
-              states->txt += "\"file\",";
-            }
-
+            states->txt += isDir ? "\"dir\"," : "\"file\",";
             states->txt += "\"name\":\"";
-            states->txt += file.name();
+            states->txt += fno.fname;
             states->txt += "\",\"size\":";
-            states->txt += file.size();
+            states->txt += fsize;
             states->txt += ",\"sfn\":\"";
             states->txt += sfn;
             states->txt += "\",\"last\":";
-            states->txt += file.getLastWrite();
+            states->txt += timestamp;
             states->txt += "}";
 
-            if (states->txt.length() > max_len) {
-              memcpy(buffer, states->txt.c_str(), max_len);
-              states->txt = states->txt.substring(max_len);
-              return max_len;
+            if (states->txt.length() > max_len || (millis() - _start_chunk_ms) > MAX_MS_PER_CHUNK) {
+              size_t len = states->txt.length();
+              if (len > max_len) {
+                len = max_len;
+              }
+              memcpy(buffer, states->txt.c_str(), len);
+              states->txt = states->txt.substring(len);
+              log_i("handler took %ums", millis() - _start_chunk_ms);
+              return len;
             }
           }
 
-          if (!states->finished) {
-            states->finished = true;
-            states->txt += "]";
-            memcpy(buffer, states->txt.c_str(), states->txt.length());
-            states->root.close();
-            umountSD();
-            return states->txt.length();
-          } else {
-            return 0;
-          }
+          states->finished = true;
+          states->txt += "]";
+          memcpy(buffer, states->txt.c_str(), states->txt.length());
+          f_closedir(&states->dir);
+          umountSD();
+          log_i("handler took %ums", millis() - _start_chunk_ms);
+          return states->txt.length();
         });
         request->send(response);
     }
@@ -824,7 +872,7 @@ void handleDownload(AsyncWebServerRequest *request)
     }
     else
     {
-      log_i("Download request %s %lu bytes", path, request->_tempFile.size());
+      log_i("Download request %s %lu bytes", path.c_str(), request->_tempFile.size());
       AsyncWebServerResponse *response = request->beginResponse("application/octet-stream", request->_tempFile.size(),
         [request](uint8_t *buffer, size_t maxLen, size_t index) -> size_t
         {
@@ -942,6 +990,7 @@ void handleRemove(AsyncWebServerRequest *request)
   umountSD();
 }
 
+#ifdef USE_SHA1
 /* CMD Return SHA1 of a file */
 void handleSha1(AsyncWebServerRequest *request)
 {
@@ -1022,6 +1071,7 @@ void handleSha1(AsyncWebServerRequest *request)
   request->send(200, "application/json", result);
   return;
 }
+#endif /* USE_SHA1 */
 
 /* CMD Upload a file */
 void handleUpload(AsyncWebServerRequest *request)
@@ -1261,16 +1311,18 @@ void handleUploadProcess(AsyncWebServerRequest *request, String filename, size_t
 
 void sendFileInfoJson(AsyncWebServerRequest *request, File file) {
   AsyncResponseStream *response = request->beginResponseStream("application/json");
+  unsigned int timestamp;
+  size_t fsize;
   char sfn[FF_SFN_BUF + 1];
-  get_sfn(sfn, &file);
+  get_file_info(file.path(), sfn, &timestamp, &fsize);
 
   response->printf(
     "{\"item\": {\"type\":\"%s\",\"name\":\"%s\",\"size\":%u,\"sfn\":\"%s\",\"last\":%u}}",
     file.isDirectory() ? "dir" : "file",
     file.name(),
-    file.size(),
+    fsize,
     sfn,
-    file.getLastWrite()
+    timestamp
   );
 
   request->send(response);
