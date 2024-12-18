@@ -991,85 +991,122 @@ void handleRemove(AsyncWebServerRequest *request)
 }
 
 #ifdef USE_SHA1
+#define SHA1_READ_BUFFER 4*1024
+struct HandleSha1States {
+  uint8_t sha1_buffer[SHA1_READ_BUFFER];
+  boolean finished;
+  mbedtls_sha1_context ctx;
+};
+
 /* CMD Return SHA1 of a file */
 void handleSha1(AsyncWebServerRequest *request)
 {
 
   if (!request->hasArg("path"))
   {
-    httpInvalidRequest(request, "SHA1:BADARGS");
+    httpInvalidRequestJson(request, "SHA1:BADARGS");
     return;
   }
 
   if (mountSD() != MOUNT_OK)
   {
-    httpServiceUnavailable(request, "SHA1:SDBUSY");
+    httpServiceUnavailableJson(request, "SHA1:SDBUSY");
     return;
   }
 
   String path = request->arg("path");
-  if (path[0] != '/')
+  if (path[0] != '/') {
     path = "/" + path;
-
-  File dataFile = fileSystem.open(path, FILE_READ);
-
-  if (!fileSystem.exists(path) || !dataFile)
-  {
-    umountSD();
-    httpNotFound(request);
-    return;
-  };
-  if (dataFile.isDirectory())
-  {
-    dataFile.close();
-    umountSD();
-    httpNotAllowed(request);
-    return;
   }
-  size_t fileSize = dataFile.size();
 
-  log_i("sha1 file %s size  %lu", path.c_str(), fileSize);
-
-  mbedtls_sha1_context ctx;
-  mbedtls_sha1_init(&ctx);
-  mbedtls_sha1_starts_ret(&ctx);
-
-#define bufferSize 1024
-
-  uint8_t sha1_buffer[bufferSize];
-
-  int N = fileSize / bufferSize;
-  int r = fileSize % bufferSize;
-
-  for (int i = 0; i < N; i++)
+  request->_tempFile = fileSystem.open(path, FILE_READ);
+  if (!request->_tempFile)
   {
-    dataFile.readBytes((char *)sha1_buffer, bufferSize);
-    mbedtls_sha1_update_ret(&ctx, sha1_buffer, bufferSize);
+    httpServiceUnavailableJson(request, "Failed to open file");
   }
-  if (r)
+  else if (request->_tempFile.isDirectory())
   {
-    dataFile.readBytes((char *)sha1_buffer, r);
-    mbedtls_sha1_update_ret(&ctx, sha1_buffer, r);
+    request->_tempFile.close();
+    httpNotAllowedJson(request, "Path is a directory");
   }
-  dataFile.close();
-  umountSD();
-
-  String result = "{\"sha1sum\": \"";
+  else
   {
-    unsigned char tmp[20];
-    mbedtls_sha1_finish_ret(&ctx, tmp);
-    mbedtls_sha1_free(&ctx);
+    size_t fileSize = request->_tempFile.size();
+    log_i("Sha1 request %s %lu bytes", path.c_str(), fileSize);
 
-    for (int i = 0; i < sizeof(tmp); i++)
-    {
-      if (tmp[i] < 0x10)
-        result += "0";
-      result += String(tmp[i], 16);
-    }
+    struct HandleSha1States *states = new HandleSha1States();
+    states->finished = false;
+    mbedtls_sha1_init(&states->ctx);
+    mbedtls_sha1_starts_ret(&states->ctx);
+    request->_tempObject = states;
+
+    AsyncWebServerResponse *response = request->beginResponse("application/json", 0,
+      [request, fileSize](uint8_t *buffer, size_t max_len, size_t index) -> size_t
+      {
+        struct HandleSha1States *states = (struct HandleSha1States *) request->_tempObject;
+        unsigned int _start_chunk_ms = millis();
+        log_i("index:%u, max_len:%u", index, max_len);
+
+        /* If we finished, means we can return 0, this will close the chunk response */
+        if (states->finished) {
+          return 0;
+        }
+
+        /* We shouln't be here */
+        if (!request->_tempFile) {
+          log_e("request->_tempFile is NULL in callback");
+          return 0;
+        }
+
+        /* See were we left off last chunk */
+        size_t start = request->_tempFile.position();
+        size_t pos;
+
+        for (pos = start; pos + SHA1_READ_BUFFER < fileSize; pos += SHA1_READ_BUFFER) {
+          request->_tempFile.read(states->sha1_buffer, SHA1_READ_BUFFER);
+          mbedtls_sha1_update_ret(&states->ctx, states->sha1_buffer, SHA1_READ_BUFFER);
+
+          /* If we exceed the chunk timeout, yield */
+          if ((millis() - _start_chunk_ms) > MAX_MS_PER_CHUNK) {
+            log_i("handler took %ums", millis() - _start_chunk_ms);
+            return RESPONSE_TRY_AGAIN;
+          }
+        }
+
+        /* Now treat the last bit of data (when data size is not a multiple of buffer size) */
+        if (pos + SHA1_READ_BUFFER > fileSize) {
+          ssize_t remain = fileSize - pos;
+          request->_tempFile.read(states->sha1_buffer, remain);
+          mbedtls_sha1_update_ret(&states->ctx, states->sha1_buffer, remain);
+        }
+
+        /* We finished, now convert the sha1 into a string */
+        states->finished = true;
+        String txt = "{\"sha1sum\": \"";
+        {
+          unsigned char tmp[20];
+          mbedtls_sha1_finish_ret(&states->ctx, tmp);
+          mbedtls_sha1_free(&states->ctx);
+
+          for (int i = 0; i < sizeof(tmp); i++) {
+            /* Add a leading 0 in case the number is on 4bits */
+            if (tmp[i] < 0x10) {
+              txt += "0";
+            }
+            txt += String(tmp[i], 16);
+          }
+        }
+        txt += "\"}";
+        memcpy(buffer, txt.c_str(), txt.length());
+        request->_tempFile.close();
+        umountSD();
+        log_i("handler took %ums", millis() - _start_chunk_ms);
+        return txt.length();
+      });
+
+    request->send(response);
+    log_i("sha1 response sent");
   }
-  result += "\"}";
-  request->send(200, "application/json", result);
-  return;
 }
 #endif /* USE_SHA1 */
 
