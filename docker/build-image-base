@@ -1,0 +1,6 @@
+#!/bin/sh
+
+PROJECT=ubuntu-base
+DOCKERFILE=Dockerfile.ubuntu
+
+docker build --no-cache=true -t ${PROJECT} . -f $DOCKERFILE

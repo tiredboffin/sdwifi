@@ -1,0 +1,13 @@
+FROM ubuntu:24.04
+
+USER root
+RUN apt-get update && \
+	apt-get install -y curl git python3 dfu-util python3-serial && \
+	rm -rf /var/lib/apt/lists/*
+
+WORKDIR /home/ubuntu
+
+USER ubuntu
+
+
+

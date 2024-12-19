@@ -1,0 +1,22 @@
+#!/bin/sh
+PROJECT=ubuntu-base
+USER=ubuntu
+
+[ $# -eq 0 ]  && echo "Specify script name" && exit 1
+
+[ ! -f "$1" ] && echo "script $1 not found" && exit 1
+
+[ ! -x "$1" ] && echo "script $1 is not executable" && exit 1
+
+SCRIPT=$1
+
+mkdir -p user ; cp ${SCRIPT} user/
+
+docker run \
+  --rm \
+  -it \
+  -v ${PWD}/user:/home/${USER}:Z \
+  ${PROJECT} \
+  /bin/bash -c "./${SCRIPT}"
+
+
