@@ -1,4 +1,4 @@
-#!/bin/sh
+#!/bin/bash
 #Guess ttyUSB port and set custom C flags
 if [ -f env.sh ]; then
     . ./env.sh
